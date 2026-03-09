@@ -130,6 +130,7 @@ AddDecisionQueue("SETDQCONTEXT", $player, "Choose a mode for " . CardLink($cardI
 AddDecisionQueue("BUTTONINPUT", $player, "Option_A,Option_B,Option_C");
 AddDecisionQueue("SHOWMODES", $player, $cardID, 1);
 Await($player, $cardID, final:true);
+n 
 
 // In SpecificLogic — log choice and create trigger layer
 global $dqVars;
