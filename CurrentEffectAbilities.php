@@ -766,6 +766,9 @@ function OnAttackEffects($cardID)
   $attackType = CardType($cardID);
   for ($i = count($currentTurnEffects) - CurrentTurnEffectsPieces(); $i >= 0; $i -= CurrentTurnEffectsPieces()) {
     $remove = false;
+    $Effect = new CurrentEffect($i);
+    $card = GetClass($Effect->EffectID(), $Effect->PlayerID());
+    if ($card != "-") $remove = $card->OnAttackEffect($cardID, $i);
     if ($currentTurnEffects[$i + 1] == $mainPlayer) {
       switch ($currentTurnEffects[$i]) {
         case "bramble_spark_red":
@@ -1653,7 +1656,7 @@ function CurrentEffectDamagePrevention($player, $index, $type, $damage, $source,
       }
       break;
     case "sawbones_dock_hand_yellow":
-      $preventedDamage += 1;
+      if ($preventable) $preventedDamage += 1;
       RemoveCurrentTurnEffect($index);
       break;
     case "throw_caution_to_the_wind_blue":
@@ -2715,11 +2718,12 @@ function EffectPlayCardConstantRestriction($cardID, $type, &$restriction, $phase
       switch ($effectID) {
         case "burdens_of_the_past_blue":
           // handle modal cards separately
+          $defenseReactionsInDiscard = explode(",", SearchDiscard($currentPlayer, "DR", getDistinctCardNames: true));
           if ($modalCheck || GetAbilityTypes($cardID) == "") {
-            if (in_array(GamestateSanitize(NameOverride($cardID, $currentPlayer)), $effectArr) && CardType($cardID) == "DR" && ($turn[0] == "A" || $turn[0] == "D" || $turn[0] == "INSTANT")) $restriction = "burdens_of_the_past_blue";
+            if (in_array(GamestateSanitize(NameOverride($cardID, $currentPlayer)), $defenseReactionsInDiscard) && CardType($cardID) == "DR" && ($turn[0] == "A" || $turn[0] == "D" || $turn[0] == "INSTANT")) $restriction = "burdens_of_the_past_blue";
           }
           elseif(GetAbilityNames($cardID, from:$from) == "-,Defense Reaction" || GetAbilityNames($cardID, from:$from) == "Defense Reaction") {//if dreact is the only available mode
-            if (in_array(GamestateSanitize(NameOverride($cardID, $currentPlayer)), $effectArr) && CardType($cardID) == "DR" && ($turn[0] == "A" || $turn[0] == "D" || $turn[0] == "INSTANT")) $restriction = "burdens_of_the_past_blue";
+            if (in_array(GamestateSanitize(NameOverride($cardID, $currentPlayer)), $defenseReactionsInDiscard) && CardType($cardID) == "DR" && ($turn[0] == "A" || $turn[0] == "D" || $turn[0] == "INSTANT")) $restriction = "burdens_of_the_past_blue";
           }
           break;
         default:

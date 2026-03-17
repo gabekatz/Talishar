@@ -130,7 +130,7 @@ function OUTAbilityCost($cardID)
     switch ($cardID)
     {
       case "spike_with_bloodrot_red": case "spike_with_frailty_red": case "spike_with_inertia_red": return true;
-      case "prowl_red": case "prowl_yellow": case "prowl_blue": return HasStealth($attackID);
+      case "prowl_red": case "prowl_yellow": case "prowl_blue": return HasStealth($attackID) && TypeContains($attackID, "AA");
       case "razors_edge_red": case "razors_edge_yellow": case "razors_edge_blue": return true;
       case "mask_of_many_faces": return CardType($attackID) == "AA";
       case "head_leads_the_tail_red": return CardType($attackID) == "AA" && count($commaArr) > 1 && IsCurrentAttackName(GamestateUnsanitize($commaArr[1]));
@@ -520,8 +520,8 @@ function OUTAbilityCost($cardID)
       case "shake_down_red":
         if(NumAttackReactionsPlayed() > 0 && IsHeroAttackTarget())
         {
-          AddDecisionQueue("SETDQCONTEXT", $mainPlayer, "Choose a pitch value", 1);
-          AddDecisionQueue("BUTTONINPUT", $mainPlayer, "1,2,3", 1);
+          AddDecisionQueue("SETDQCONTEXT", $mainPlayer, "Choose a color", 1);
+          AddDecisionQueue("BUTTONINPUT", $mainPlayer, "Red,Yellow,Blue", 1);
           AddDecisionQueue("SETDQVAR", $mainPlayer, "0", 1);
           AddDecisionQueue("WRITELOG", $mainPlayer, "Main player chose: {0}", 1);
           AddDecisionQueue("FINDINDICES", $defPlayer, "HAND");
@@ -579,7 +579,7 @@ function OUTAbilityCost($cardID)
           AddDecisionQueue("PAYRESOURCES", $mainPlayer, "<-", 1);
           AddDecisionQueue("BUTTONINPUT", $mainPlayer, "Head_Jab,Surging_Strike,Twin_Twisters", 1);
           AddDecisionQueue("SETDQVAR", $mainPlayer, "0", 1);
-          AddDecisionQueue("WRITELOG", $mainPlayer, "Attack renamed to <b>{0}</b>", 1);
+          AddDecisionQueue("WRITELOG", $mainPlayer, CardLink($cardID) . " gains the name <b>{0}</b>", 1);
           AddDecisionQueue("PREPENDLASTRESULT", $mainPlayer, $cardID . "-", 1);
           AddDecisionQueue("ADDCURRENTTURNEFFECT", $mainPlayer, "<-", 1);
         }

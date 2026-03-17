@@ -1545,7 +1545,12 @@ function SearchMultizone($player, $searches)
             $phantasmOnly = $condition[1];
             break;
           case "pitch":
-            $pitch = $condition[1];
+            $pitch = match(strtolower($condition[1])) {
+              "red" => "1",
+              "yellow" => "2",
+              "blue" => "3",
+              default => $condition[1]
+            };
             break;
           case "specOnly":
             $specOnly = $condition[1];
@@ -2077,8 +2082,7 @@ function SearchLayersForNAACard($maxCost=-1) {
     for ($i = 0; $i < $countLayers; $i += $layerPieces) {
       $playerID = $layers[$i+1];
       $from = explode("|",$layers[$i+2])[0];
-      $cardType = CardType($layers[$i], "LAYER", $playerID, $i);
-      if ($maxCost != -1 && CardCost($layers[$i], "LAYER") > $maxCost) continue;
+      if ($maxCost != -1 && CardCost($layers[$i], "LAYER", index:$i) > $maxCost) continue;
       if (TypeContains($layers[$i], "A", from: "LAYER", index:$i) && (!IsActivated($layers[$i], $from))) {
         array_push($found, "LAYER-" . $i);
       }

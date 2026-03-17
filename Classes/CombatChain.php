@@ -28,6 +28,14 @@ class CombatChain {
     return "";
   }
 
+  function FindCardID($id) {
+    if (!$this->HasCurrentLink()) return new ChainCard(-1);
+    for ($i = 0; $i < count($this->chain); $i += CombatChainPieces()) {
+      if ($this->chain[$i] == $id) return new ChainCard($i);
+    }
+    return new ChainCard(-1);
+  }
+
   function AttackCard() {
     return new ChainCard(0);
   }
@@ -55,6 +63,13 @@ class CombatChain {
     return count($this->chain) > 0;
   }
 
+  function HasCurrentAttack() {
+    global $combatChainState, $CCS_GoesWhereAfterLinkResolves;
+    if (!$this->HasCurrentLink()) return false;
+    if ($combatChainState[$CCS_GoesWhereAfterLinkResolves] == "-") return false;
+    return true;
+  }
+
   function CurrentAttack() {
     if(!$this->HasCurrentLink()) return "";
     return $this->chain[0];
@@ -73,7 +88,10 @@ class ChainCard {
     // Constructor
     function __construct($index) {
       global $combatChain;
-      $this->chain = &$combatChain;
+      if ($index != -1)
+        $this->chain = &$combatChain;
+      else
+        $this->chain = [];
       $this->index = $index;
     }
 
@@ -83,7 +101,7 @@ class ChainCard {
 
     function ID() {
       if(count($this->chain) == 0) return "";
-      return $this->chain[$this->index];
+      return $this->chain[$this->index] ?? "-";
     }
 
     function Become($cardID) {
@@ -100,7 +118,7 @@ class ChainCard {
     }
 
     function ResourcesPaid() {
-      return isset($this->chain[$this->index+3]) ? $this->chain[$this->index+3] : 0;
+      return $this->chain[$this->index+3] ?? 0;
     }
 
     function RepriseActive() {
@@ -131,6 +149,10 @@ class ChainCard {
       CurrentEffectAfterPlayOrActivateAbility();
     }
 
+    function DefenseModifier() {
+      return $this->chain[$this->index+6] ?? 0;
+    }
+
     function ModifyDefense($amount) {
       global $CombatChain;
       if (!isset($this->chain[$this->index+6]) || !CanGainBlock($this->chain[$this->index+6])) $amount = 0;
@@ -150,6 +172,7 @@ class ChainCard {
     }
 
     function AddBuff($effectID) {
+      if (!isset($this->chain[$this->index+10])) return;
       if ($this->StaticBuffs() == "-") $this->chain[$this->index+10] = $effectID;
       else $this->chain[$this->index+10] .= ",$effectID";
     }

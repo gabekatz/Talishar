@@ -250,6 +250,10 @@ function StoreLastGameInfo($uid, $gameName, $playerID, $authKey)
 function GetDeckBuilderId($uid, $decklink)
 {
 	$conn = GetDBConnection();
+	if (!$conn) {
+        echo json_encode(["error" => "Database connection failed in getting deckbuilder ID"]);
+        return "";
+	}
 	$sql = "SELECT fabraryId,fabdbId FROM users WHERE usersId=?";
 	$stmt = mysqli_stmt_init($conn);
 	if (mysqli_stmt_prepare($stmt, $sql)) {
@@ -265,6 +269,11 @@ function GetDeckBuilderId($uid, $decklink)
 	if (count($row) == 0) return "";
 	if (str_contains($decklink, "fabrary")) $dbId = $row[0];
 	else if (str_contains($decklink, "fabdb")) $dbId = $row[1];
+	else if (str_contains($decklink, "fabbazaar")) {
+		if (preg_match('/fabbazaar[^\/]*\/decks\/([a-zA-Z0-9_-]+)/', $decklink, $matches)) {
+			$dbId = $matches[1];
+		}
+	}
 	if ($dbId == "NULL") $dbId = "";
 	return $dbId;
 }
@@ -349,6 +358,10 @@ function logCompletedGameStats($conceded = false)
 		$countLoserDeck = count(GetDeck($loser));
 
 		$conn = GetDBConnection();
+		if (!$conn) {
+			WriteLog("Something went wrong connecting to the database, failing to log stats", highlight:true);
+			return;
+		}
 
 		// Build parameterized query safely
 		$params = [$winHeroID, $loseHeroID, $currentTurn, $winIDDeck, $loseIDDeck, GetHealth($winner), $firstPlayer];
@@ -401,6 +414,7 @@ function logCompletedGameStats($conceded = false)
 			);
 		}
 		SendFaBInsightsResults($gameResultID, $p1DeckLink, $p1Deck, $p1Hero, $p1deckbuilderID, $p2DeckLink, $p2Deck, $p2Hero, $p2deckbuilderID, $p1StatsDisabled, $p2StatsDisabled, $gameGUID, $conceded, $countWinnerDeck, $countLoserDeck);
+		SendFaBBazaarResults($gameResultID, $p1DeckLink, $p1Deck, $p1Hero, $p1deckbuilderID, $p2DeckLink, $p2Deck, $p2Hero, $p2deckbuilderID, $p1StatsDisabled, $p2StatsDisabled, $gameGUID, $conceded, $countWinnerDeck, $countLoserDeck);
 
 		if (!$p1FabraryDisabled && !$p2FabraryDisabled)  $fabraryDesc = "<b>Fabrary</b>";
 		elseif (!$p1FabraryDisabled)                     $fabraryDesc = "<b>Fabrary</b> (Player 1 only)";
@@ -551,6 +565,51 @@ function SendFaBInsightsResults($gameID, $p1DeckLink, $p1Deck, $p1Hero, $p1deckb
 
     $response = curl_exec($ch);
     curl_close($ch);
+}
+
+function SendFaBBazaarResults($gameID, $p1DeckLink, $p1Deck, $p1Hero, $p1deckbuilderID, $p2DeckLink, $p2Deck, $p2Hero, $p2deckbuilderID, $p1StatsDisabled = false, $p2StatsDisabled = false, $gameGUID = "", $conceded = false, $countWinnerDeck = 0, $countLoserDeck = 0)
+{
+	global $gameName, $p2IsAI, $deckHashSalt, $FaBBazaarKey;
+	if ($p2IsAI == "1") return;
+
+	$hashedP1Deck = HashPlayerName($p1DeckLink, $deckHashSalt);
+	$hashedP2Deck = HashPlayerName($p2DeckLink, $deckHashSalt);
+
+	$p1TurnLog = &GetCardTurnLog(1);
+	$p2TurnLog = &GetCardTurnLog(2);
+
+	$payloadArr = [];
+	$payloadArr['gameID'] = $gameID;
+	$payloadArr['gameName'] = $gameName;
+	$payloadArr['deck1'] = json_decode(SerializeDetailedGameResult(1, $hashedP1Deck, $p1Deck, $gameID, $p2Hero, $gameName, $p1deckbuilderID, $p1Hero, $p1StatsDisabled));
+	$payloadArr['deck1']->turnLog = $p1TurnLog;
+	$payloadArr['deck2'] = json_decode(SerializeDetailedGameResult(2, $hashedP2Deck, $p2Deck, $gameID, $p1Hero, $gameName, $p2deckbuilderID, $p2Hero, $p2StatsDisabled));
+	$payloadArr['deck2']->turnLog = $p2TurnLog;
+	$payloadArr['format'] = GetCachePiece(intval($gameName), 13);
+	$payloadArr['gameGUID'] = $gameGUID;
+	$payloadArr['conceded'] = $conceded;
+	$payloadArr['countWinnerDeck'] = $countWinnerDeck;
+	$payloadArr['countLoserDeck'] = $countLoserDeck;
+
+	$deckId = $p1deckbuilderID ?: $p2deckbuilderID;
+	if (empty($deckId)) return;
+
+	$url = "https://fabbazaar.app/api/decks/" . $deckId . "/talishar";
+
+	$ch = curl_init($url);
+	curl_setopt($ch, CURLOPT_POST, true);
+	curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payloadArr));
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($ch, CURLOPT_HTTPHEADER, [
+		"Content-Type: application/json",
+		"x-api-key: " . $FaBBazaarKey,
+		"User-Agent: Talishar",
+	]);
+	curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+	curl_exec($ch);
+	curl_close($ch);
+
+	WriteLog("📊 Sending game stats to <b>FaB Bazaar</b>", highlight:true, highlightColor:"green");
 }
 
 function PopulateTurnStatsAndAggregates(&$deck, &$turnStats, &$otherPlayerTurnStats, $player, $useIntval = false)

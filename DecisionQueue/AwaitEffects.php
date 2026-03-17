@@ -148,8 +148,10 @@ function SetLayerTargetAwait($player) {
   $cleanTarget = CleanTarget($player, $targ);
   for ($i = 0; $i < $Stack->NumLayers(); ++$i) {
     $Layer = $Stack->Card($i, true);
-    if ($Layer->ID() == $cardID) 
+    if ($Layer->ID() == $cardID) {
       $Layer->AddTarget($cleanTarget);
+      return $Layer->Target();
+    }
   }
   return $cleanTarget;
 }
@@ -180,9 +182,11 @@ function DealDamageAwait($player) {
 
 Function YesNoAwait($player) {
   global $dqVars;
-  $context = $dqVars["context"];
+  $context = $dqVars["context"] ?? "-";
+  $message = $dqVars["message"] ?? "-";
   PrependDecisionQueue("NOPASS", $player, "-", 1);
-  PrependDecisionQueue("YESNO", $player, $context);
+  PrependDecisionQueue("YESNO", $player, $message, 1);
+  PrependDecisionQueue("SETDQCONTEXT", $player, $context, 1);
 }
 
 function PayResourcesAwait($player) {
@@ -204,4 +208,9 @@ function PlayAuraAwait($player) {
   $effectController = $dqVars["effectController"] ?? "-";
   $effectSource = $dqVars["effectSource"] ?? "-";
   PlayAura($cardID, $player, $number, $isToken, $rogueHeronSpecial, $numPowerCounters, $from, $additionalCosts, $effectController, $effectSource);
+}
+
+function CardChoicesAwait($player) {
+  global $dqVars;
+  PrependDecisionQueue("BUTTONINPUT", $player, $dqVars["choices"], 1);
 }

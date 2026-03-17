@@ -6053,11 +6053,12 @@ class snarky_prick_red extends Card {
   function ProcessAttackTrigger($target, $uniqueID) {
     global $defPlayer;
     $Deck = new Deck($defPlayer);
-    if (ColorContains($Deck->Top(), 1, $defPlayer)) {
-      $cardID = $Deck->Top(true);
-      AddGraveyard($cardID, $defPlayer, "DECK", $this->controller);
-      AddCurrentTurnEffect($this->cardID, $this->controller);
-      WriteLog("You " . CardLink($this->cardID) . "! You destroyed my " . CardLink($cardID) . "!");
+    $topDeck = $Deck->Top();
+    if (ColorContains($topDeck, 1, $defPlayer)) {
+      $message = "if_you_want_to_destroy_the_card";
+      $context = "Choose if you want to destroy " . CardLink($topDeck) . " from your opponent's deck";
+      Await($this->controller,  "YesNo", message:$message, context:$context, subsequent:false);
+      Await($this->controller, $this->cardID);
     }
     else {
       AddDecisionQueue("WRITELOG", $defPlayer, "Shows opponent's top deck", 1);
@@ -6075,6 +6076,15 @@ class snarky_prick_red extends Card {
 
   function EffectPowerModifier($param, $attached = false) {
     return 4;
+  }
+
+  function SpecificLogic() {
+    global $defPlayer;
+    $Deck = new Deck($defPlayer);
+    $cardID = $Deck->Top(true);
+    AddGraveyard($cardID, $defPlayer, "DECK", $this->controller);
+    AddCurrentTurnEffect($this->cardID, $this->controller);
+    WriteLog("You " . CardLink($this->cardID) . "! You destroyed my " . CardLink($cardID) . "!");
   }
 }
 
@@ -7024,14 +7034,7 @@ class glyph_destruction_nodes_yellow extends Card {
     $numTargets = SearchCount(SearchMultizone($this->controller, "MYAURAS:nameIncludes=Sigil"));
     $search = "THEIRCHAR:type=C&THEIRALLY";
     if (!ShouldAutotargetOpponent($this->controller)) $search .= "&MYCHAR:type=C&MYALLY";
-    for ($i = 0; $i < $numTargets; ++$i) {
-      $nLeft = $numTargets - $i;
-      AddDecisionQueue("MULTITARGETINDICES", $this->controller, $search, 1);
-      AddDecisionQueue("SETDQCONTEXT", $this->controller, "Choose up to $nLeft more target(s)", 1);
-      AddDecisionQueue("MAYCHOOSEMULTIZONE", $this->controller, "<-", 1);
-      AddDecisionQueue("SHOWSELECTEDTARGET", $this->controller, "<-", 1);
-      AddDecisionQueue("SETLAYERTARGET", $this->controller, $this->cardID, 1);
-    }
+    SetTargets($this->controller, $this->cardID, $search, $numTargets, true);
   }
 
   function ArcaneDamage() {
@@ -7208,8 +7211,22 @@ class cheating_scoundrel_red extends Card {
 
   function CombatEffectActive($parameter = '-', $defendingCard = '', $flicked = false) {
     global $CombatChain;
-    return CardType($CombatChain->AttackCard()->ID()) == "AA" && $parameter !=  "WAGER";
+    return CardType($CombatChain->AttackCard()->ID()) == "AA" && $parameter != "WAGER";
   }
+
+  function OnAttackEffect($cardID, $i) {
+    $Effect = new CurrentEffect($i);
+    $param = explode("-", $Effect->EffectID())[1] ?? "-";
+    if ($param != "WAGER") {//the "Wager" effect is for the lose replacement effect
+      AddLayer("TRIGGER", $this->controller, $this->cardID);
+    }
+    return false;
+  }
+
+  function ProcessTrigger($uniqueID, $target = '-', $additionalCosts = '-', $from = '-') {
+    AddOnWagerEffects();
+  }
+
   function EffectPowerModifier($param, $attached = false) {
     return 3;
   } 
@@ -7495,7 +7512,7 @@ class temporal_wobble_red extends Card {
   function IsPlayRestricted(&$restriction, $from = '', $index = -1, $resolutionCheck = false) {
     $cost = SearchCount(SearchAura($this->controller, nameIncludes:"Sigil"))-1;
     if ($cost == -1) return true;
-    return SearchLayersForNAACard($cost) == "";;
+    return SearchLayersForNAACard($cost) == "";
   }
 
   function PayAdditionalCosts($from, $index = '-') {
@@ -7516,7 +7533,7 @@ class temporal_wobble_red extends Card {
       // It should do this even if the target is gone, use LKI to find the owner
       // low priority to fix
       GainActionPoints(1, $TargetLayer->PlayerID());
-      if (CardCost($TargetLayer->ID(), "LAYER") <= $cost)
+      if (CardCost($TargetLayer->ID(), "LAYER", $TargetLayer->Index()) <= $cost)
         $TargetLayer->Negate("GY");
     }
   }
@@ -7813,7 +7830,7 @@ class seismic_shift_red extends Card {
   function PlayAbility($from, $resourcesPaid, $target = '-', $additionalCosts = '-', $uniqueID = '-1', $layerIndex = -1) {
     foreach(explode(",", $target) as $targ) {
       $Target = CleanTargetToObject($this->controller, $targ);
-      $Target->Destroy();
+      if ($Target != "") $Target->Destroy();
     }
   }
 }

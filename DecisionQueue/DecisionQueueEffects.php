@@ -451,7 +451,7 @@ function PlayerTargetedAbility($player, $card, $lastResult)
     case "BURDENSOFTHEPAST":
       $defenseReactionsInDiscard = SearchDiscard($target, "DR", getDistinctCardNames: true);
       WriteLog("Player {$target} was targeted. Burdens of the Past prevents the play of the folowing defense reactions: <b>" . (str_replace("_", " ", $defenseReactionsInDiscard)) . "</b>");
-      AddCurrentTurnEffect("burdens_of_the_past_blue," . $defenseReactionsInDiscard, $target);
+      AddCurrentTurnEffect("burdens_of_the_past_blue", $target);
       if (SearchCount(SearchDiscard($target, "DR")) >= 10) {
         WriteLog("Player {$player} draws a card as target hero has at least 10 defense reactions in their graveyard.");
         Draw($player);
@@ -1387,7 +1387,10 @@ function SpecificCardLogic($player, $card, $lastResult, $initiator)
         $Link = $ChainLinks->GetLink($linkNum);
         $LinkCard = $Link->GetLinkCard($ind);
         $names = ($ind == 0) ? $Link->ListofNames() : GamestateSanitize(NameOverride($LinkCard->ID(), $player));
-        WriteLog(CardLink($attackID) . " gains the name(s) <b>" . GamestateUnsanitize($names) . "</b>");
+        $namesWithSpaces = str_replace(",", ", ", $names);
+        $nameCount = count(explode(",", $names));
+        $nameLabel = ($nameCount == 1) ? "name" : "names";
+        WriteLog(CardLink($attackID) . " gains the " . $nameLabel . " <b>" . GamestateUnsanitize($namesWithSpaces) . "</b>");
         AddCurrentTurnEffect("$attackID-$names", $player);
       }
       return $lastResult;

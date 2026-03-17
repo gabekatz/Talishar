@@ -97,7 +97,7 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
   }
 
   $isReactFE = true;
-  $isGameOver = IsGameOver();
+  $isGameOver = function_exists("IsGameOver") ? IsGameOver() : false;
   $isCasterMode = IsCasterMode();
   $isReplay = IsReplay();
 
@@ -115,17 +115,6 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
     $spectatorIsFriendOfP1 = in_array($p1uid, $friendList);
     $spectatorIsFriendOfP2 = in_array($p2uid, $friendList);
   }
-  
-  // Debug logging
-  $response->debugFriendsBackend = [
-    'friendList' => $friendList,
-    'p1uid' => $p1uid,
-    'p2uid' => $p2uid,
-    'spectatorIsFriendOfP1' => $spectatorIsFriendOfP1,
-    'spectatorIsFriendOfP2' => $spectatorIsFriendOfP2,
-    'sessionUserLoggedIn' => $sessionUserLoggedIn,
-    'sessionUserName' => $sessionUserName,
-  ];
 
   $response->lastUpdate = $cacheVal;
 
@@ -432,16 +421,6 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
   $spectatorCanSeeP1Hand = $playerID == 3 && ($isCasterMode || ($spectatorIsFriendOfP1 && !IsHideHandFromFriends(1)));
   $showTheirHand = $isGameOver || $isReplay || ($playerID == 3 && $spectatorIsFriendOfP1 && !IsHideHandFromFriends(1));
   
-  // Send debug info for front-end logging
-  $response->debugFriendHand = [
-    'playerID' => $playerID,
-    'spectatorIsFriendOfP1' => $spectatorIsFriendOfP1,
-    'p1HideHandFromFriends' => IsHideHandFromFriends(1),
-    'showTheirHand' => $showTheirHand,
-    'isGameOver' => $isGameOver,
-    'isReplay' => $isReplay
-  ];
-  
   for ($i = 0; $i < $theirHandCount; ++$i) {
     $theirHandContents[] = JSONRenderedCard($showTheirHand ? $theirHand[$i] : $TheirCardBack);
   }
@@ -452,6 +431,13 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
   $response->opponentHealth = $theirHealth;
   //Their Soul Count
   $response->opponentSoulCount = count($theirSoul);
+
+  $opponentSoulArr = [];
+  $theirSoulCount = count($theirSoul);
+  for ($i = 0; $i < $theirSoulCount; $i += SoulPieces()) {
+    $opponentSoulArr[] = JSONRenderedCard($theirSoul[$i]);
+  }
+  $response->opponentSoul = $opponentSoulArr;
 
   //Display their discard, pitch, deck, and banish
   $opponentDiscardArray = [];
@@ -642,6 +628,13 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
   $response->playerHealth = $myHealth;
   //My Soul Count
   $response->playerSoulCount = count($mySoul);
+
+  $playerSoulArr = [];
+  $mySoulCount = count($mySoul);
+  for ($i = 0; $i < $mySoulCount; $i += SoulPieces()) {
+    $playerSoulArr[] = JSONRenderedCard($mySoul[$i]);
+  }
+  $response->playerSoul = $playerSoulArr;
 
   //My Discard
   $playerDiscardArr = [];
@@ -1330,6 +1323,12 @@ function BuildGameStateResponse($gameName, $playerID, $authKey, $sessionData = [
       $thisEvent = new stdClass();
       $thisEvent->eventType = $events[$i];
       $thisEvent->eventValue = $events[$i + 1] ?? null;
+      // CLASHDASH: Dash's own deck reveal skip animation for Dash IO since they already see the top of their decks.
+      if ($thisEvent->eventType == "CLASHDASH") {
+        $clashParts = explode(":", $thisEvent->eventValue ?? "");
+        if (intval($clashParts[0]) == intval($playerID)) continue;
+        $thisEvent->eventType = "CLASH";
+      }
       array_push($newEvents->eventArray, $thisEvent);
     }
   }

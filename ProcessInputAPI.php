@@ -2,6 +2,10 @@
 
 error_reporting(E_ALL);
 
+// Limit script execution time to 1 second to avoid long-running requests
+@set_time_limit(1);
+@ini_set('max_execution_time', '1');
+
 session_start();
 
 // CRITICAL: Capture session data immediately and release the lock
@@ -118,8 +122,12 @@ try {
         include_once "./includes/dbh.inc.php";
         include_once "./includes/functions.inc.php";
         if ($playerID == 0) {
-          // Profile settings update - use captured session data (session already closed)
-          if ($sessionUserId !== null) {
+          // Profile settings update - prefer userID from frontend (more reliable than session)
+          // Only use POST userID if it's actually a valid numeric ID (guards against JS String(null) = "null")
+          $postUserID = $_POST["userID"] ?? "";
+          if (is_numeric($postUserID)) {
+            $userID = $postUserID;
+          } elseif ($sessionUserId !== null) {
             $userID = $sessionUserId;
           }
         } else {

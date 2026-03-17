@@ -2,6 +2,10 @@
 
 error_reporting(E_ALL);
 
+// Limit script execution time to 1 second to avoid long-running requests
+@set_time_limit(1);
+@ini_set('max_execution_time', '1');
+
 include "WriteLog.php";
 include "GameLogic.php";
 include "GameTerms.php";
@@ -85,7 +89,7 @@ include "ParseGamestate.php";
 if (IsReplay() && $mode == 99) {
   $filename = "./Games/$gameName/replayCommands.txt";
   $commands = file($filename);
-  $pointer = intval(trim($commands[0])) + 1;
+  $pointer = intval(trim($commands[0] ?? "0")) + 1;
   $line = $commands[$pointer] ?? "";
   $params = explode(" ", $line);
   $playerID = $params[0] ?? "";

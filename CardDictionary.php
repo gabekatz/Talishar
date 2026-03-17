@@ -531,7 +531,7 @@ function CardTalent($cardID, $from="-")
 }
 
 //Minimum cost of the card
-function CardCost($cardID, $from="-")
+function CardCost($cardID, $from="-", $index=-1)
 {
   $cardID = BlindCard($cardID, true);
   $cardID = ShiyanaCharacter($cardID);
@@ -601,6 +601,12 @@ function CardCost($cardID, $from="-")
       return 1;
     case "nitro_mechanoidc":
       return -1;
+    case "spark_of_genius_yellow":
+      if ($from == "LAYER") {
+        $Layer = new Layer($index);
+        return $Layer->DynCost();
+      }
+      else return 0;
     default:
       break;
   }
@@ -1324,7 +1330,7 @@ function NameBlocked($cardID, $index, $from, $pitch=false, $nameGiven=false) {
   $cardName = $nameGiven ? $cardID : NameOverride($cardID);
   $foundNullTime = SearchItemForModalities(GamestateSanitize($cardName), $mainPlayer, "null_time_zone_blue") != -1;
   $foundNullTime = $foundNullTime || SearchItemForModalities(GamestateSanitize($cardName), $defPlayer, "null_time_zone_blue") != -1;
-  $foundNullTime = $foundNullTime && $from == "HAND";
+  $foundNullTime = $foundNullTime && ($from == "HAND" || $pitch);
 
   $foundSpeechless = SearchAuraForModalities(GamestateSanitize($cardName), $mainPlayer, "leave_em_speechless_blue") != -1;
   $foundSpeechless = $foundSpeechless || SearchAuraForModalities(GamestateSanitize($cardName), $defPlayer, "leave_em_speechless_blue") != -1;
@@ -1380,10 +1386,15 @@ function GetAbilityNames($cardID, $index = -1, $from = "-", $facing = "-"): stri
   if ($card != "-") return $card->GetAbilityNames($index, $from, $nameBlocked, $layerCount, $facing);
   switch ($cardID) {
     case "teklo_plasma_pistol":
-    case "plasma_barrel_shot":
       if ($index == -1) return "";
       $rv = SearchLayersForPhase("RESOLUTIONSTEP") == -1 ? "Add_a_steam_counter" : "-";
       if ($character[$index + 2] > 0 && !SearchCurrentTurnEffects("kabuto_of_imperial_authority", $mainPlayer)) $rv .= ",Attack";
+      return $rv;
+    case "plasma_barrel_shot":
+      $CharacterCard = new CharacterCard($index, $currentPlayer);
+      if ($index == -1) return "";
+      $rv = SearchLayersForPhase("RESOLUTIONSTEP") == -1 ? "Add_a_steam_counter" : "-";
+      if ($CharacterCard->NumCounters() > 0 && !SearchCurrentTurnEffects("kabuto_of_imperial_authority", $mainPlayer) && $CharacterCard->NumUses() > 0) $rv .= ",Attack";
       return $rv;
     case "barbed_castaway":
       if(!SearchCurrentTurnEffects("barbed_castaway-Load", $currentPlayer)) return "Aim";
@@ -2568,7 +2579,7 @@ function IsPlayRestricted($cardID, &$restriction, $from = "", $index = -1, $play
     case "amulet_of_earth_blue":
       return $from == "PLAY" && GetClassState($player, $CS_NumFusedEarth) == 0;
     case "blizzard_blue":
-      if ($CombatChain->HasCurrentLink()) return false;//If there's an attack, there's a valid target
+      if ($CombatChain->HasCurrentAttack()) return false;//If there's an attack, there's a valid target
       return !IsLayerStep();
     case "amulet_of_ice_blue":
       return $from == "PLAY" && GetClassState($player, $CS_NumFusedIce) == 0;
@@ -3469,6 +3480,10 @@ function GoesOnCombatChain($phase, $cardID, $from, $currentPlayer)
       return true;
     case "bunker_beard":
       return $phase == "B";
+    case "oldhim":
+    case "oldhim_grandfather_of_eternity":
+      // dreacts that don't go onto the chain
+      return false;
     default:
       break;
   }
@@ -4011,7 +4026,6 @@ function CharacterDefaultActiveState($cardID)
     case "prism_awakener_of_sol":
     case "prism_advent_of_thrones":
     case "storm_striders":
-    case "okana_scar_wraps":
     case "alluvion_constellas":
     case "compass_of_sunken_depths":
     case "pouncing_paws":
@@ -4046,8 +4060,10 @@ function CharacterDefaultActiveState($cardID)
     case "tearing_shuko":
     case "blood_scent":
       return 1;
+    case "okana_scar_wraps":
     case "verdance_thorn_of_the_rose":
     case "verdance":
+    case "jarl_vetreidi":
       return 0;
     default:
       return 2;

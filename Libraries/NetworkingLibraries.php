@@ -1026,9 +1026,9 @@ function ProcessInput($playerID, $mode, $buttonInput, $cardID, $chkCount, $chkIn
       mkdir($folderName, 0700, true);
       copy("./Games/$gameName/gamestate.txt", $folderName . "/gamestate.txt");
       if (file_exists("./Games/$gameName/gamestateBackup.txt")) copy("./Games/$gameName/gamestateBackup.txt", $folderName . "/gamestateBackup.txt");
-      copy("./Games/$gameName/gamelog.txt", $folderName . "/gamelog.txt");
-      copy("./Games/$gameName/beginTurnGamestate.txt", $folderName . "/beginTurnGamestate.txt");
-      copy("./Games/$gameName/lastTurnGamestate.txt", $folderName . "/lastTurnGamestate.txt");
+      if (file_exists("./Games/$gameName/gamelog.txt")) copy("./Games/$gameName/gamelog.txt", $folderName . "/gamelog.txt");
+      if (file_exists("./Games/$gameName/beginTurnGamestate.txt")) copy("./Games/$gameName/beginTurnGamestate.txt", $folderName . "/beginTurnGamestate.txt");
+      if (file_exists("./Games/$gameName/lastTurnGamestate.txt")) copy("./Games/$gameName/lastTurnGamestate.txt", $folderName . "/lastTurnGamestate.txt");
       WriteLog("🚨Thank you for reporting a player. The chat log has been saved on the server. Please report it to a mod on Discord with the game number for reference ($gameName).", highlight: true);
       break;
     case 100015: //Request to enable chat
@@ -1216,7 +1216,7 @@ function PassInput($autopass = true, $doublePass = false)
   elseif ($turn[0] == "YESNO") {
     ContinueDecisionQueue("NO");
   }
-  elseif ($turn[0] == "CHOOSEARCANE") {
+  elseif ($turn[0] == "CHOOSEARCANE" || $turn[0] == "CHOOSENUMBER") {
     ContinueDecisionQueue("0");
   }
   elseif ($turn[0] == "ORDERTRIGGERS") {
@@ -1226,6 +1226,13 @@ function PassInput($autopass = true, $doublePass = false)
         $layers[$i] = "TRIGGER";
     }
     ContinueDecisionQueue();
+  }
+  elseif ($turn[0] == "PDECK") {
+    $pitch = &GetPitch($currentPlayer);
+    for ($i = 0; $i < count($pitch); ++$i) {
+      PitchDeck($currentPlayer, 0);
+    }
+    PassTurn();
   }
   else {
     switch ($autopass) {
@@ -2192,11 +2199,15 @@ function PlayCard($cardID, $from, $dynCostResolved = -1, $index = -1, $uniqueID 
       IncrementClassState($currentPlayer, $CS_NumWeaponsActivated);
     if (HasWateryGrave($cardID) && $from == "GY") IncrementClassState($currentPlayer, $CS_NumWateryGrave);
     if (CardName($cardID) == "Nimblism") IncrementClassState($currentPlayer, $CS_PlayedNimblism);
-    //gone in a flash is the active chainlink
-    $goneActive = $CombatChain->HasCurrentLink() && $CombatChain->AttackCard()->ID() == "gone_in_a_flash_red";
-    if($goneActive && DelimStringContains(CardType($cardID), "I") && $currentPlayer == $mainPlayer) {
-      if(SearchCurrentTurnEffects("gone_in_a_flash_red", $mainPlayer, true)) {
-        AddLayer("TRIGGER", $mainPlayer, "gone_in_a_flash_red");
+    if ($CombatChain->HasCurrentLink()) {
+      $activeLinkID = $CombatChain->AttackCard()->ID();
+      $attackcard = GetClass($activeLinkID, $mainPlayer);
+      if ($attackcard != "-") $attackcard->ActiveLinkPlayTrigger($cardID, $currentPlayer, $from);
+
+      if($activeLinkID  == "gone_in_a_flash_red" && DelimStringContains(CardType($cardID), "I") && $currentPlayer == $mainPlayer) {
+        if(SearchCurrentTurnEffects("gone_in_a_flash_red", $mainPlayer, true)) {
+          AddLayer("TRIGGER", $mainPlayer, "gone_in_a_flash_red");
+        }
       }
     }
     if (SearchCurrentTurnEffects("lightning_greaves", $mainPlayer) && DelimStringContains(CardType($cardID), "I")) {
@@ -2797,7 +2808,7 @@ function AddPrePitchDecisionQueue($cardID, $from, $index = -1, $facing="-")
       $names[0] = "-";
     } elseif (
       // Main phase with available action point as the main player: always allow the Action half.
-      !($turn[0] == "M" && $actionPoints >= 1 && $currentPlayer == $mainPlayer)
+      !(($turn[0] == "M" && (!IsResolutionStep() || $from == "HAND")) && $actionPoints >= 1 && $currentPlayer == $mainPlayer)
       && (
         !IsInstantMod($mod)
         && $cardType != "I"
@@ -2810,6 +2821,7 @@ function AddPrePitchDecisionQueue($cardID, $from, $index = -1, $facing="-")
     ) {
         $names[0] = "-";
     }
+    $option = "-";
     if ($names[0] == "-" && $names[1] == "-") {
       WriteLog("Both sides of the meld card are blocked, reverting play", highlight: true);
       RevertGamestate();
@@ -4219,10 +4231,10 @@ function PlayCardEffect($cardID, $from, $resourcesPaid, $target = "-", $addition
       WriteLog(CardLink($cardID, $cardID) . " fails to resolve because dominate is active and there is already a card defending from hand.");
       $skipDRResolution = true;
     }
-    if ($definedCardType == "DR" && SearchCurrentTurnEffects("confidence", $mainPlayer) && NumNonBlocksDefending() >= 2 && IsCombatEffectActive("confidence")) {
+    if (($definedCardType == "DR" || ($definedCardType == "E" && GetAbilityType($cardID) == "DR")) && SearchCurrentTurnEffects("confidence", $mainPlayer) && NumNonBlocksDefending() >= 2 && IsCombatEffectActive("confidence")) {
       $discard = new Discard($currentPlayer);
       $discard->Add($cardID, "LAYER");
-      WriteLog(CardLink($cardID, $cardID) . " fails to resolve because confidence is active and there are already 2 non-block card defending.");
+      WriteLog(CardLink($cardID, $cardID) . " fails to resolve because " . CardLink("confidence") . " is active and there are already 2 non-block card defending.");
       $skipDRResolution = true;
     }
     // dreacts that can only defend specific things
@@ -4325,9 +4337,7 @@ function PlayCardEffect($cardID, $from, $resourcesPaid, $target = "-", $addition
         $pieces = CurrentTurnEffectPieces();
         for ($i = $count - $pieces; $i >= 0; $i -= $pieces) {
           if (IsCombatEffectActive($currentTurnEffects[$i]) && !IsCombatEffectLimited($i)) {
-            if ($currentTurnEffects[$i] == "cheating_scoundrel_red")
-              AddOnWagerEffects();
-            elseif (IsLayerContinuousBuff($currentTurnEffects[$i]) && $currentTurnEffects[$i + 1] == $mainPlayer) {
+            if (IsLayerContinuousBuff($currentTurnEffects[$i]) && $currentTurnEffects[$i + 1] == $mainPlayer) {
               $CombatChain->AttackCard()->AddBuff(ConvertToSetID($currentTurnEffects[$i]));
               RemoveCurrentTurnEffect($i);
             }
@@ -4340,17 +4350,23 @@ function PlayCardEffect($cardID, $from, $resourcesPaid, $target = "-", $addition
         if (ColorContains($cardID, 3, $defPlayer)) IncrementClassState($defPlayer, $CS_NumBlueDefended);
       }
     }
-    switch ($cardID) { //cards that add themselves as blocking
-      case "quickdodge_flexors":
-        if ($turn[0] != "B") {
-          OnBlockEffects($index, "EQUIP");
-          OnBlockResolveEffects($cardID);
-        }
-        break;
-      default:
-        break;
+    if (!$skipDRResolution) {
+      switch ($cardID) { //cards that add themselves as blocking
+        case "quickdodge_flexors":
+          if ($turn[0] != "B") {
+            OnBlockEffects($index, "EQUIP");
+            OnBlockResolveEffects($cardID);
+          }
+          break;
+        default:
+          break;
+      }
     }
     SetClassState($currentPlayer, $CS_PlayCCIndex, $index);
+  } else if ($cardID == "quickdodge_flexors") {
+    if ($CombatChain->FindCardID($cardID)->Index() == -1)
+      // helpful log message
+      WriteLog(CardLink($cardID) . " could not be added as a defending chain link!");
   } else if ($from != "PLAY" && $from != "EQUIP" && $from != "COMBATCHAINATTACKS") {
     $cardSubtype = CardSubType($cardID);
     if (DelimStringContains($cardSubtype, "Aura")) PlayAura($cardID, $currentPlayer, from: $from, additionalCosts: $additionalCosts);

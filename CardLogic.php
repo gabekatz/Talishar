@@ -297,14 +297,14 @@ function AddDecisionQueue($phase, $player, $parameter, $subsequent = 0, $makeChe
     }
   }
 
-  $parameter = str_replace(" ", "_", $parameter);
+  $parameter = str_replace(" ", "_", $parameter ?? "");
   array_splice($decisionQueue, $insertIndex, 0, [$phase, $player, $parameter, $subsequent, $makeCheckpoint]);
 }
 
 function PrependDecisionQueue($phase, $player, $parameter, $subsequent = 0, $makeCheckpoint = 0)
 {
   global $decisionQueue;
-  $parameter = str_replace(" ", "_", $parameter);
+  $parameter = str_replace(" ", "_", $parameter ?? "");
   $decisionQueue = array_merge([$phase, $player, $parameter, $subsequent, $makeCheckpoint], $decisionQueue);
 }
 
@@ -598,9 +598,9 @@ function ContinueDecisionQueue($lastResult = "")
   $phase = array_shift($decisionQueue); 
   $player = array_shift($decisionQueue);
   $parameter = array_shift($decisionQueue);
-  // foreach($dqVars as $key => $value) WriteLog("$key => $value"); //Uncomment this to visualize decision queue variables execution
-  //WriteLog($dqVars[0] . " " . $dqVars[1] . " " . $dqVars[2]);//Uncomment this to visualize decision queue variables execution
-  // WriteLog($phase . " " . $player . " " . $parameter . " " . $lastResult);//Uncomment this to visualize decision queue execution
+  // foreach($dqVars as $key => $value) WriteLog("$key => $value"); // Uncomment this to visualize decision queue variables execution
+  // WriteLog($dqVars[0] . " " . $dqVars[1] . " " . $dqVars[2]); // Uncomment this to visualize decision queue variables execution
+  // WriteLog($phase . " " . $player . " " . $parameter . " " . $lastResult); // Uncomment this to visualize decision queue execution
   if (count($dqVars) > 0) {
     if (str_contains($parameter, "{0}") && isset($dqVars[0])) $parameter = str_replace("{0}", $dqVars[0], $parameter);
     if (str_contains($parameter, "<0>") && isset($dqVars[0])) $parameter = str_replace("<0>", CardLink($dqVars[0], $dqVars[0]), $parameter);
@@ -1841,7 +1841,7 @@ function ProcessMainCharacterHitEffect($cardID, $player, $target)
       }
       $index = SearchCharacterForCards($cardID, $player);
       if (SearchBanishForCard($player, "edge_of_autumn") != -1 && $openHands) {
-        AddDecisionQueue("SETDQCONTEXT", $player, "Equip_a_banished_edge_of_autumn?");
+        AddDecisionQueue("SETDQCONTEXT", $player, "Do you want to equip an ".CardLink("edge_of_autumn")." from your banish zone?");
         if ($index == "" || IsCharacterActive($player, $index)) {
          AddDecisionQueue("YESNO", $player, "-", 1);
          AddDecisionQueue("NOPASS", $player, "-", 1);
@@ -3380,7 +3380,7 @@ function ProcessTrigger($player, $parameter, $uniqueID, $target = "-", $addition
       case "evo_magneto_blue_equip":
         $index = FindCharacterIndex($player, "evo_magneto_blue_equip");
         if ($index != -1) {
-          CharacterChooseSubcard($player, $index, isMandatory: false);
+          CharacterChooseSubcard($player, $index, isMandatory: false, actionName:"destroy");
           AddDecisionQueue("ADDDISCARD", $player, "CHAR", 1);
           AddDecisionQueue("MULTIZONEINDICES", $player, "THEIRITEMS:minCost=0;maxCost=1", 1);
           AddDecisionQueue("SETDQCONTEXT", $player, "Choose an item to gain control.", 1);
@@ -4757,9 +4757,9 @@ function ModifiedPowerValue($cardID, $player, $from, $source = "", $index=-1)
       }
     }
   }
-  else if ($cardID == "nitro_mechanoidc") {
+  if ($cardID == "nitro_mechanoidc") {
     $Items = new Items($player);
-    $Mechanoid = $Items->FindCard("nitromechanoidc");
+    $Mechanoid = $Items->FindCard("nitro_mechanoidc");
     $power = 5;
     $subcards = $Mechanoid->SubCards();
     if ($subcards != "-") {

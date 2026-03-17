@@ -58,7 +58,7 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
   global $CS_ArcaneTargetsSelected, $inGameStatus, $CS_ArcaneDamageDealt, $MakeStartTurnBackup, $CCS_AttackTargetUID, $MakeStartGameBackup;
   global $CCS_AttackNumCharged, $layers, $CS_DamageDealt, $currentTurnEffects, $CCS_EclecticMag;
   global $CS_PlayIndex, $landmarks, $CCS_GoesWhereAfterLinkResolves, $CS_HitCounter, $CurrentTurnEffects, $CS_ArcaneDamageDealtToOpponent;
-  global $turn, $actionPoints, $CS_NextWizardNAAInstant, $CS_NextNAAInstant;
+  global $turn, $actionPoints, $CS_NextWizardNAAInstant, $CS_NextNAAInstant, $CCS_CurrentAttackGainedGoAgain;
   $rv = "";
   $otherPlayer = $player == 1 ? 2 : 1;
   switch ($phase) {
@@ -198,7 +198,7 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
           break;
         case "CCDEFLESSX":
           $rv = SearchCombatChainLink($player, "", "", -1, -1, "", "", false, false, -1, false, -1, $subparam);
-          if ($rv[0] == "0" && (strlen($rv) == 0 || $rv[1] == ",")) $rv = substr($rv, 2);
+          if ($rv != "" && $rv[0] == "0" && (strlen($rv) == 0 || $rv[1] == ",")) $rv = substr($rv, 2);
           break;
         case "MYHANDARROW":
           $rv = SearchHand($player, "", "Arrow");
@@ -900,11 +900,12 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
         case "ADDSUBCARD":
           $mzArr = explode("-", $lastResult);
           $character = &GetPlayerCharacter($player);
-          if ($character[$mzArr[1]] == "teklovossen_the_mechropotentb") {
+          if (str_contains($character[$mzArr[1]], "teklovossen_the_mechropotent")) {
             if ($character[10] != "-" && $character[10] != "") {
               $character[10] .= ",$paramArr[1]";
             } else $character[10] = $paramArr[1];
             ++$character[2]; // Update the counter
+            AddSoul($paramArr[1], $player, "-");
             break;
           } else if ($character[$mzArr[1] + 10] != "-") {
             $character[$mzArr[1] + 10] .= ",$paramArr[1]";
@@ -3145,7 +3146,7 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
       return $cardID;
     case "REMOVESOUL":
       $char = &GetPlayerCharacter($player);
-      for ($i = 0; $i < count($lastResult); $i++) {
+      for ($i = count($lastResult) - 1; $i >= 0; $i--) {
         RemoveSoul($player, SearchSoulForIndex($lastResult[$i], $player));
       }
       return $lastResult;
@@ -3663,6 +3664,8 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
       $lastResult = str_replace(",,", ",", $lastResult);
       return $lastResult;
     case "GONEINAFLASH":
+      if (!DoesAttackHaveGoAgain()) //lock in last known information
+        $combatChainState[$CCS_CurrentAttackGainedGoAgain] = 0;
       CleanUpCombatEffects();
       if (SearchLayersForPhase("RESOLUTIONSTEP") == -1 && !IsLayerStep()) $combatChainState[$CCS_GoesWhereAfterLinkResolves] = "-";
       elseif ($chainLinks[count($chainLinks)-1][2] == 0) break;
@@ -4017,7 +4020,7 @@ function DecisionQueueStaticEffect($phase, $player, $parameter, $lastResult)
       }
       return $lastResult;
     case "ADDSTATICBUFF":
-      $combatChain[$parameter + 10] = $lastResult;
+      $CombatChain->Card($parameter)->AddBuff($lastResult);
       return $lastResult;
     case "REMOVEFROMCHOICES":
       $ret = [];
