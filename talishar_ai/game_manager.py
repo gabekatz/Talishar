@@ -62,7 +62,7 @@ class GameManager:
         (game_name, p1_auth_key, p2_auth_key)
         """
         resp = self._post(
-            "/APIs/CreateTrainingGame.php",
+            "/game/APIs/CreateTrainingGame.php",
             {
                 "p1_deck": p1_deck,
                 "p2_deck": p2_deck,
@@ -84,7 +84,7 @@ class GameManager:
     ) -> dict[str, Any]:
         """Fetch the current AI game state for *player_id*."""
         resp = self._get(
-            "/GetAIState.php",
+            "/game/GetAIState.php",
             {"gameName": game_name, "playerID": player_id, "authKey": auth_key},
         )
         if "error" in resp:
@@ -95,13 +95,16 @@ class GameManager:
         self, game_name: str, player_id: int, auth_key: str
     ) -> dict[str, Any]:
         """
-        Poll GetAIState until the game is over OR *player_id* has priority.
+        Poll GetAIState until the game is over OR *player_id* has priority with
+        at least one legal move available.
 
         Returns the state dict.  Raises RuntimeError after *max_poll* attempts.
         """
         for _ in range(self.max_poll):
             state = self.get_state(game_name, player_id, auth_key)
-            if state.get("havePriority") or self._is_terminal(state):
+            if self._is_terminal(state):
+                return state
+            if state.get("havePriority") and state.get("legalMoves"):
                 return state
             time.sleep(self.poll_interval)
         raise RuntimeError(
@@ -136,7 +139,7 @@ class GameManager:
             "authKey": auth_key,
             **params,
         }
-        resp = self._post("/SubmitAIAction.php", body)
+        resp = self._post("/game/SubmitAIAction.php", body)
         if "error" in resp:
             raise RuntimeError(f"SubmitAIAction failed: {resp['error']}")
         return resp

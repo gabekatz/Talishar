@@ -60,6 +60,7 @@ class TalisharEnv(gym.Env):
         p2_is_ai: bool = True,
         player_id: int = 1,
         shaped_reward_scale: float = 0.01,
+        max_steps: int = 2000,
     ) -> None:
         super().__init__()
         self.gm                  = game_manager
@@ -68,6 +69,7 @@ class TalisharEnv(gym.Env):
         self.p2_is_ai            = p2_is_ai
         self.player_id           = player_id
         self.shaped_reward_scale = shaped_reward_scale
+        self.max_steps           = max_steps
 
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
@@ -83,6 +85,7 @@ class TalisharEnv(gym.Env):
         self._prev_my_health:   int = 20
         self._prev_opp_health:  int = 20
         self._last_state: dict[str, Any] = {}
+        self._step_count: int = 0
 
     # ------------------------------------------------------------------
     # Core Gym API
@@ -108,6 +111,7 @@ class TalisharEnv(gym.Env):
         self._last_state = state
         self._prev_my_health  = state.get("myState",    {}).get("health", 20)
         self._prev_opp_health = state.get("theirState", {}).get("health", 20)
+        self._step_count = 0
 
         obs  = self._encoder.encode(state)
         info = self._make_info(state, result=None)
@@ -139,8 +143,10 @@ class TalisharEnv(gym.Env):
             )
 
         self._last_state = next_state
+        self._step_count += 1
 
         terminated = self._is_terminal(next_state)
+        truncated  = (not terminated) and (self._step_count >= self.max_steps)
         reward     = self._compute_reward(next_state, terminated)
 
         # Update prev health for next step
@@ -151,7 +157,7 @@ class TalisharEnv(gym.Env):
         result = self._result(next_state) if terminated else None
         info   = self._make_info(next_state, result=result)
 
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
 
     # ------------------------------------------------------------------
     # Action masking (for masked PPO)
@@ -180,8 +186,8 @@ class TalisharEnv(gym.Env):
             return self._terminal_reward(state)
 
         # Dense shaping: reward for dealing damage, penalty for taking it
-        delta_opp = self._prev_opp_health - opp_hp   # positive = we dealt damage
-        delta_my  = self._prev_my_health  - my_hp    # positive = we took damage
+        delta_opp = int(self._prev_opp_health) - int(opp_hp)   # positive = we dealt damage
+        delta_my  = int(self._prev_my_health)  - int(my_hp)    # positive = we took damage
         shaped    = self.shaped_reward_scale * (delta_opp - delta_my)
         return float(np.clip(shaped, -1.0, 1.0))
 
@@ -197,9 +203,9 @@ class TalisharEnv(gym.Env):
         """Return "win", "loss", or "draw"."""
         my_hp  = state.get("myState",    {}).get("health", 0)
         opp_hp = state.get("theirState", {}).get("health", 0)
-        if opp_hp <= 0 and my_hp > 0:
+        if int(opp_hp) <= 0 and int(my_hp) > 0:
             return "win"
-        if my_hp <= 0 and opp_hp > 0:
+        if int(my_hp) <= 0 and int(opp_hp) > 0:
             return "loss"
         # Fall back to turnPlayer heuristic if health deltas are ambiguous
         return "draw"
@@ -209,7 +215,7 @@ class TalisharEnv(gym.Env):
         phase = (state.get("phase") or {}).get("turnPhase", "")
         my_hp  = state.get("myState",    {}).get("health", 1)
         opp_hp = state.get("theirState", {}).get("health", 1)
-        return phase == "OVER" or my_hp <= 0 or opp_hp <= 0
+        return phase == "OVER" or int(my_hp) <= 0 or int(opp_hp) <= 0
 
     def _make_info(self, state: dict, result: str | None) -> dict:
         return {

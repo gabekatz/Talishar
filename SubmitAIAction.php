@@ -32,6 +32,8 @@
  *   { "mode": 19, "chkCount": 2, "chk": ["0", "2"] }
  */
 
+ob_start();
+
 error_reporting(E_ALL);
 
 // CRITICAL: Capture session data and release the lock immediately.
@@ -54,15 +56,13 @@ include 'Libraries/HTTPLibraries.php';
 require_once 'Libraries/CoreLibraries.php';
 include_once 'includes/dbh.inc.php';
 include_once 'includes/functions.inc.php';
-include_once 'APIKeys/APIKeys.php';
+@include_once 'APIKeys/APIKeys.php';
 include_once 'Libraries/ValidationLibraries.php';
 include_once 'BuildGameState.php';
 include_once 'BuildPlayerInputPopup.php';
 
 SetHeaders();
 header('Content-Type: application/json; charset=utf-8');
-
-ob_start();
 
 $body = json_decode(file_get_contents('php://input'), true) ?? [];
 
@@ -342,9 +342,31 @@ function CollectLegalMoves(stdClass $gs): array
         $moves[] = CardMove($nextID++, $gs->playerDeckCard, 'DECK');
     }
 
+    $currentResources = intval($gs->playerPitchCount ?? 0);
+    $handSize = count((array)($gs->playerHand ?? []));
+    $maxAffordable = $currentResources + $handSize * 3;
+
+    $totalHandPitch = 0;
+    foreach ((array)($gs->playerHand ?? []) as $hCard) {
+        $totalHandPitch += max(0, (int)PitchValue($hCard->cardNumber ?? ''));
+    }
+
     foreach ($zoneSets as [$zone, $cards]) {
         foreach ($cards as $card) {
             if (($card->action ?? 0) !== 0) {
+                if ($zone === 'EQUIPMENT') {
+                    $cost = AbilityCost($card->cardNumber ?? '');
+                    if ($cost > $maxAffordable) continue;
+                }
+                if ($zone === 'HAND') {
+                    $cardNum = $card->cardNumber ?? '';
+                    $cost = max(0, (int)CardCost($cardNum));
+                    if ($cost > 0) {
+                        $cardPitch = max(0, (int)PitchValue($cardNum));
+                        $affordableFromRemaining = $currentResources + ($totalHandPitch - $cardPitch);
+                        if ($cost > $affordableFromRemaining) continue;
+                    }
+                }
                 $moves[] = CardMove($nextID++, $card, $zone);
             }
         }
@@ -372,9 +394,12 @@ function CollectLegalMoves(stdClass $gs): array
         }
     }
 
+    static $excludedModes = [10000 => true, 10001 => true, 10003 => true]; // Undo / Undo Block / Revert Turn
+    $turnPhaseStr = $gs->turnPhase->turnPhase ?? '';
     foreach ($gs->playerPrompt->buttons ?? [] as $btn) {
         if (!isset($btn->mode)) continue;
         $mode  = intval($btn->mode);
+        if (isset($excludedModes[$mode])) continue;
         $value = $btn->value ?? '';
         $moves[] = [
             'id'          => $nextID++,
@@ -382,6 +407,18 @@ function CollectLegalMoves(stdClass $gs): array
             'mode'        => $mode,
             'params'      => array_filter(['mode' => $mode, 'buttonInput' => $value], fn($v) => $v !== ''),
             'description' => $btn->text ?? "Button (mode $mode)",
+        ];
+    }
+
+    if (($gs->turnPhase->turnPhase ?? '') === 'INPUTCARDNAME') {
+        $handCards = $gs->playerHand ?? [];
+        $namedCard = !empty($handCards) ? ($handCards[0]->cardNumber ?? 'Enlightened_Strike') : 'Enlightened_Strike';
+        $moves[] = [
+            'id'          => $nextID++,
+            'type'        => 'INPUT_CARD_NAME',
+            'mode'        => 30,
+            'params'      => ['mode' => 30, 'buttonInput' => $namedCard],
+            'description' => 'Name a card (' . $namedCard . ')',
         ];
     }
 
@@ -404,6 +441,29 @@ function CollectLegalMoves(stdClass $gs): array
                 'mode'        => 99,
                 'params'      => ['mode' => 99],
                 'description' => 'Pass current phase',
+            ];
+        }
+    }
+
+    // ---- Fallback: never return an empty move list --------------------------
+    if (empty($moves)) {
+        $turnPhase = $gs->turnPhase->turnPhase ?? '';
+        if ($turnPhase === 'P') {
+            // Stuck in P phase with nothing to pitch — Cancel undoes the play.
+            $moves[] = [
+                'id'          => 0,
+                'type'        => 'CANCEL',
+                'mode'        => 10000,
+                'params'      => ['mode' => 10000],
+                'description' => 'Cancel (cannot pay cost)',
+            ];
+        } else {
+            $moves[] = [
+                'id'          => 0,
+                'type'        => 'PASS',
+                'mode'        => 99,
+                'params'      => ['mode' => 99],
+                'description' => 'Pass (fallback)',
             ];
         }
     }

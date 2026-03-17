@@ -30,11 +30,17 @@
  * as URL query parameters.
  */
 
-include 'Libraries/HTTPLibraries.php';
+include 'WriteLog.php';
+include 'GameLogic.php';
+include 'GameTerms.php';
 include 'HostFiles/Redirector.php';
 include 'Libraries/SHMOPLibraries.php';
-include 'WriteLog.php';
-include_once 'Libraries/CacheLibraries.php';
+include 'Libraries/StatFunctions.php';
+include 'Libraries/UILibraries.php';
+include 'Libraries/PlayerSettings.php';
+include 'Libraries/CacheLibraries.php';
+include 'Libraries/HTTPLibraries.php';
+require_once 'Libraries/CoreLibraries.php';
 include_once 'includes/dbh.inc.php';
 include_once 'BuildGameState.php';
 include_once 'BuildPlayerInputPopup.php';
@@ -142,9 +148,38 @@ function CollectLegalMoves(stdClass $gs): array
         $moves[] = CardMove($nextID++, $gs->playerDeckCard, 'DECK');
     }
 
+    // Pre-compute affordability bounds.
+    // Playing any card may trigger P phase if resources[0] < cost.
+    // If the remaining hand cards can't cover the cost, the P phase becomes
+    // unresolvable (no cards left to pitch).  Filter those moves out here.
+    $currentResources = intval($gs->playerPitchCount ?? 0);
+    $handSize = count((array)($gs->playerHand ?? []));
+    $maxAffordable = $currentResources + $handSize * 3; // each card pitches at most 3
+
+    // Total pitch available across all hand cards (for per-card affordability check)
+    $totalHandPitch = 0;
+    foreach ((array)($gs->playerHand ?? []) as $hCard) {
+        $totalHandPitch += max(0, (int)PitchValue($hCard->cardNumber ?? ''));
+    }
+
     foreach ($zoneSets as [$zone, $cards]) {
         foreach ($cards as $card) {
             if (($card->action ?? 0) !== 0) {
+                if ($zone === 'EQUIPMENT') {
+                    $cost = AbilityCost($card->cardNumber ?? '');
+                    if ($cost > $maxAffordable) continue;
+                }
+                if ($zone === 'HAND') {
+                    $cardNum = $card->cardNumber ?? '';
+                    $cost = max(0, (int)CardCost($cardNum));
+                    if ($cost > 0) {
+                        // Playing this card removes it from hand — can we pitch enough
+                        // from the *remaining* cards to cover what resources don't cover?
+                        $cardPitch = max(0, (int)PitchValue($cardNum));
+                        $affordableFromRemaining = $currentResources + ($totalHandPitch - $cardPitch);
+                        if ($cost > $affordableFromRemaining) continue;
+                    }
+                }
                 $moves[] = CardMove($nextID++, $card, $zone);
             }
         }
@@ -178,9 +213,13 @@ function CollectLegalMoves(stdClass $gs): array
     }
 
     // ---- Prompt buttons (Pass, End Turn, OK, etc.) -------------------------
+    // Exclude UI-only take-back actions that would cause infinite loops.
+    static $excludedModes = [10000 => true, 10001 => true, 10003 => true]; // Undo / Undo Block / Revert Turn
+    $turnPhaseStr = $gs->turnPhase->turnPhase ?? '';
     foreach ($gs->playerPrompt->buttons ?? [] as $btn) {
         if (!isset($btn->mode)) continue;
         $mode  = intval($btn->mode);
+        if (isset($excludedModes[$mode])) continue;
         $value = $btn->value ?? '';
         $moves[] = [
             'id'          => $nextID++,
@@ -188,6 +227,22 @@ function CollectLegalMoves(stdClass $gs): array
             'mode'        => $mode,
             'params'      => array_filter(['mode' => $mode, 'buttonInput' => $value], fn($v) => $v !== ''),
             'description' => $btn->text ?? "Button (mode $mode)",
+        ];
+    }
+
+    // ---- INPUTCARDNAME decision --------------------------------------------
+    // When the engine needs a card name (e.g. "name a card" effects), expose a
+    // single move using mode 30. The card named doesn't matter strategically for
+    // training — just pick the first card in hand so it's always deck-appropriate.
+    if (($gs->turnPhase->turnPhase ?? '') === 'INPUTCARDNAME') {
+        $handCards = $gs->playerHand ?? [];
+        $namedCard = !empty($handCards) ? ($handCards[0]->cardNumber ?? 'Enlightened_Strike') : 'Enlightened_Strike';
+        $moves[] = [
+            'id'          => $nextID++,
+            'type'        => 'INPUT_CARD_NAME',
+            'mode'        => 30,
+            'params'      => ['mode' => 30, 'buttonInput' => $namedCard],
+            'description' => 'Name a card (' . $namedCard . ')',
         ];
     }
 
@@ -213,6 +268,34 @@ function CollectLegalMoves(stdClass $gs): array
                 'mode'        => 99,
                 'params'      => ['mode' => 99],
                 'description' => 'Pass current phase',
+            ];
+        }
+    }
+
+    // ---- Fallback: never return an empty move list --------------------------
+    // Some DQ phases (e.g. CHOOSENUMBER, exotic triggers) leave no legal move
+    // in the lists above.  Rather than handing the agent a zero-action state,
+    // always provide at least one action so the episode can advance.
+    if (empty($moves)) {
+        $turnPhase = $gs->turnPhase->turnPhase ?? '';
+        if ($turnPhase === 'P') {
+            // Stuck in P phase with nothing to pitch (empty hand or all hand cards
+            // filtered out by affordability).  Cancel undoes the play and returns
+            // to M phase — the only escape from this deadlock.
+            $moves[] = [
+                'id'          => 0,
+                'type'        => 'CANCEL',
+                'mode'        => 10000,
+                'params'      => ['mode' => 10000],
+                'description' => 'Cancel (cannot pay cost)',
+            ];
+        } else {
+            $moves[] = [
+                'id'          => 0,
+                'type'        => 'PASS',
+                'mode'        => 99,
+                'params'      => ['mode' => 99],
+                'description' => 'Pass (fallback)',
             ];
         }
     }

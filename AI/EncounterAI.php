@@ -195,8 +195,11 @@ function EncounterAI()
           //WriteLog("CardID=" . $storedPriorityNode[0] . ", Where=" . $storedPriorityNode[1] . ", Index=" . $storedPriorityNode[2] . ", Priority=" . $storedPriorityNode[3]);
           if(CardIsPitchable($storedPriorityNode)) $found = true;
         }
-        if($found == true && $storedPriorityNode[3] != 0)
+        if($found == true)
         {
+          // Pitch whatever card was found, even if it has priority 0.
+          // Priority 0 only means the card is low value to pitch, but if it's
+          // the only option we still must pitch it (or we'd be stuck in P phase).
           PitchCardAttempt($storedPriorityNode);
         }
         else

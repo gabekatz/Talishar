@@ -555,6 +555,11 @@ function ProcessInput($playerID, $mode, $buttonInput, $cardID, $chkCount, $chkIn
         else
           PassInput(false);
       }
+      else if ($turn[0] == "P" || $turn[0] == "CHOOSEHANDCANCEL") {
+        // AI / training: confirm pitch with whatever has been selected so far
+        // (EncounterAI calls PassInput() directly; this allows it via HTTP mode 99)
+        PassInput(false);
+      }
       break;
     case 100: //Break Chain
       WriteLog("Player $playerID passes priority in the Resolution Step");

@@ -1,7 +1,7 @@
 """
 features.py — Convert a GetAIState JSON response into a fixed-size numpy vector.
 
-Observation layout (OBS_DIM = 413 floats, all normalised to roughly [0, 1]):
+Observation layout (OBS_DIM = 409 floats, all normalised to roughly [0, 1]):
 
   Slots  0– 97  hand           7 cards × 14 features
   Slots 98–125  arsenal        2 cards × 14
@@ -13,9 +13,15 @@ Observation layout (OBS_DIM = 413 floats, all normalised to roughly [0, 1]):
   Slots 385–392 phase one-hot  (8)
   Slots 393–397 combat chain   (5)
   Slot  398     stack size     (1)
-  -------
-  Slots 399–412 opponent scalars: health, deckCount, handCount, soulCount (4)
-  ... total = 413
+  Slots 399–402 opponent scalars: health, deckCount, handCount, soulCount (4)
+  Slots 403–408 aggregated hand stats (6):
+    [403] total hand power   / 50   — sum of all hand card power values
+    [404] total hand defense / 35   — sum of all hand card defense values
+    [405] total hand pitch   / 21   — sum of all hand card pitch values
+    [406] can_threaten_lethal       — 1 if total power ≥ opponent's remaining health
+    [407] incoming_lethal_if_no_block — 1 if combat chain power ≥ my remaining health
+    [408] survive_after_full_block  — 1 if I survive even after blocking with all hand cards
+  ... total = 409
 
 Card feature vector (14 floats):
   [0]  cost     / 10
@@ -53,8 +59,9 @@ PHASE_DIM   = 8   # one-hot phase
 CC_DIM      = 5   # combat chain scalars
 STACK_DIM   = 1
 OPP_DIM     = 4   # opponent scalars (health, deck, hand, soul)
+HAND_AGG_DIM = 6  # aggregated hand totals + lethal flags (see docstring)
 
-OBS_DIM = ZONE_DIM + GLOBAL_DIM + PHASE_DIM + CC_DIM + STACK_DIM + OPP_DIM  # 399+14=413
+OBS_DIM = ZONE_DIM + GLOBAL_DIM + PHASE_DIM + CC_DIM + STACK_DIM + OPP_DIM + HAND_AGG_DIM  # 409
 
 MAX_ACTIONS = 64
 
@@ -89,17 +96,17 @@ def card_to_vec(card: dict[str, Any]) -> np.ndarray:
     if not stats:
         return vec
 
-    vec[0] = min(stats.get("cost",    0), 10) / 10.0
-    vec[1] = min(stats.get("power",   0), 10) / 10.0
-    vec[2] = min(stats.get("defense", 0), 10) / 10.0
-    vec[3] = min(stats.get("pitch",   0),  3) /  3.0
+    vec[0] = min(int(stats.get("cost",    0) or 0), 10) / 10.0
+    vec[1] = min(int(stats.get("power",   0) or 0), 10) / 10.0
+    vec[2] = min(int(stats.get("defense", 0) or 0), 10) / 10.0
+    vec[3] = min(int(stats.get("pitch",   0) or 0),  3) /  3.0
 
     # Type one-hot — look at comma-separated primary type
     raw_type = (stats.get("type") or "").split(",")[0].strip()
     type_idx = _TYPE_INDEX.get(raw_type, 7)
     vec[4 + type_idx] = 1.0
 
-    vec[12] = min(card.get("counters", 0), 5) / 5.0
+    vec[12] = min(int(card.get("counters", 0) or 0), 5) / 5.0
     vec[13] = 1.0 if card.get("tapped") else 0.0
 
     return vec
@@ -137,14 +144,15 @@ class StateEncoder:
             parts.append(zone_to_block(my.get(zone_key, []), max_slots))
 
         # -- Global scalars --------------------------------------------------
+        def _i(v): return int(v or 0)
         parts.append(np.array([
-            min(my.get("health",    0),  40) / 40.0,
-            min(opp.get("health",   0),  40) / 40.0,
-            min(my.get("resources", 0),  10) / 10.0,
-            min(my.get("ap",        0),   3) /  3.0,
-            min(my.get("deckCount", 0),  80) / 80.0,
-            min(opp.get("deckCount",0),  80) / 80.0,
-            min(opp.get("handCount",0),   7) /  7.0,
+            min(_i(my.get("health",    0)),  40) / 40.0,
+            min(_i(opp.get("health",   0)),  40) / 40.0,
+            min(_i(my.get("resources", 0)),  10) / 10.0,
+            min(_i(my.get("ap",        0)),   3) /  3.0,
+            min(_i(my.get("deckCount", 0)),  80) / 80.0,
+            min(_i(opp.get("deckCount",0)),  80) / 80.0,
+            min(_i(opp.get("handCount",0)),   7) /  7.0,
         ], dtype=np.float32))
 
         # -- Phase one-hot ---------------------------------------------------
@@ -157,8 +165,8 @@ class StateEncoder:
         # -- Combat chain ----------------------------------------------------
         cc = state.get("combatChain") or {}
         parts.append(np.array([
-            min(cc.get("totalPower",   0), 15) / 15.0,
-            min(cc.get("totalDefense", 0), 15) / 15.0,
+            min(_i(cc.get("totalPower",   0)), 15) / 15.0,
+            min(_i(cc.get("totalDefense", 0)), 15) / 15.0,
             1.0 if cc.get("goAgain")   else 0.0,
             1.0 if cc.get("dominate")  else 0.0,
             1.0 if cc.get("piercing")  else 0.0,
@@ -171,10 +179,60 @@ class StateEncoder:
 
         # -- Opponent extra scalars ------------------------------------------
         parts.append(np.array([
-            min(opp.get("health",    0), 40) / 40.0,
-            min(opp.get("deckCount", 0), 80) / 80.0,
-            min(opp.get("handCount", 0),  7) /  7.0,
-            min(opp.get("soulCount", 0),  5) /  5.0,
+            min(_i(opp.get("health",    0)), 40) / 40.0,
+            min(_i(opp.get("deckCount", 0)), 80) / 80.0,
+            min(_i(opp.get("handCount", 0)),  7) /  7.0,
+            min(_i(opp.get("soulCount", 0)),  5) /  5.0,
+        ], dtype=np.float32))
+
+        # -- Aggregated hand statistics --------------------------------------
+        #
+        # These six numbers give the model pre-computed summaries of the hand
+        # so it doesn't have to learn to sum across 7 individual card vectors.
+        #
+        # Think of it like giving a player a quick "hand report":
+        #   • How much total damage can I threaten?
+        #   • How much can I block with everything?
+        #   • How much pitch do I have available?
+        #   • Am I in a position to kill the opponent this attack?
+        #   • Will I die if I don't block at all?
+        #   • Can I survive by blocking with my full hand?
+        #
+        hand_cards = my.get("hand", [])
+
+        def _hand_stat(card: dict, field: str) -> int:
+            return int((card.get("stats") or {}).get(field, 0) or 0)
+
+        total_hand_power   = sum(_hand_stat(c, "power")   for c in hand_cards)
+        total_hand_defense = sum(_hand_stat(c, "defense") for c in hand_cards)
+        total_hand_pitch   = sum(_hand_stat(c, "pitch")   for c in hand_cards)
+
+        my_health  = _i(my.get("health",  0))
+        opp_health = _i(opp.get("health", 0))
+        cc_power   = _i((state.get("combatChain") or {}).get("totalPower", 0))
+
+        # 1.0 if my hand's combined attack power is enough to kill the opponent
+        # right now — signals "go for lethal" mode.
+        can_threaten_lethal = 1.0 if (opp_health > 0 and total_hand_power >= opp_health) else 0.0
+
+        # 1.0 if the current attack on the chain will kill me if I block nothing
+        # — signals "must block or I die".
+        incoming_lethal_if_no_block = 1.0 if (my_health > 0 and cc_power >= my_health) else 0.0
+
+        # 1.0 if blocking with everything in hand still leaves me alive.
+        # Formula: damage I actually take = max(0, cc_power - total_hand_defense).
+        # If that's less than my health, I survive.  0.0 means even a full block
+        # doesn't save me (should consider floating cards for counter-attack value).
+        damage_through_full_block = max(0, cc_power - total_hand_defense)
+        survive_after_full_block  = 1.0 if my_health - damage_through_full_block > 0 else 0.0
+
+        parts.append(np.array([
+            min(total_hand_power,   50) / 50.0,   # normalised: 7 cards × ~7 power
+            min(total_hand_defense, 35) / 35.0,   # normalised: 7 cards × 5 defense
+            min(total_hand_pitch,   21) / 21.0,   # normalised: 7 cards × 3 pitch
+            can_threaten_lethal,
+            incoming_lethal_if_no_block,
+            survive_after_full_block,
         ], dtype=np.float32))
 
         obs = np.concatenate(parts)

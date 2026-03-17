@@ -85,8 +85,8 @@ $p1Key              = hash('sha256', rand() . rand());
 $p2Key              = hash('sha256', rand() . rand() . rand());
 $p1uid              = 'AI_P1';
 $p2uid              = 'AI_P2';
-$p1id               = '-';
-$p2id               = '-';
+$p1id               = '';
+$p2id               = '';
 $p1IsPatron         = '0';
 $p2IsPatron         = '0';
 $p1MetafyTiers      = [];
@@ -202,12 +202,14 @@ WriteGamestateCache($gameName, $gamestate);
 ob_clean(); // Suppress any include output
 
 $MGS_GameStarted = 5;
-include "../ParseGamestate.php";
-include "../StartEffects.php";
+chdir(dirname(__DIR__)); // ParseGamestate/WriteGamestate use relative ./Games/ paths
+unset($filename);        // Let WriteGamestate.php rebuild with the new cwd
+include "ParseGamestate.php";
+include "StartEffects.php";
 
 // Update lobby status to "started"
 $gameStatus = $MGS_GameStarted;
-$gameFileHandler = fopen("../Games/$gameName/GameFile.txt", 'r+');
+$gameFileHandler = fopen("./Games/$gameName/GameFile.txt", 'r+');
 WriteGameFile();
 
 // Update cache to "game started"
