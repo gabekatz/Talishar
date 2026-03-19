@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(php -l:*)"
+      "Bash(php -l:*)",
+      "Bash(docker exec:*)",
+      "WebFetch(domain:fabrary.net)",
+      "WebFetch(domain:api.fabrary.net)",
+      "Bash(grep -r \"WTR007\\\\|''''WTR007''''\" /Users/gabrielkatz/code/Talishar/ --include=*.php)",
+      "Bash(uv run:*)"
     ]
   }
 }

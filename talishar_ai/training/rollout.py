@@ -19,12 +19,12 @@ GAE(γ, λ) balances bias and variance in the advantage estimate:
 
 from __future__ import annotations
 
-from typing import Generator
+from typing import Generator, Optional
 
 import numpy as np
 import torch
 
-from ..features import OBS_DIM, MAX_ACTIONS
+from ..features import OBS_DIM, MAX_ACTIONS, N_CARD_SLOTS
 
 
 class RolloutBuffer:
@@ -35,14 +35,20 @@ class RolloutBuffer:
 
     def reset(self) -> None:
         C = self.capacity
-        self.obs          = np.zeros((C, OBS_DIM),      dtype=np.float32)
-        self.actions      = np.zeros(C,                  dtype=np.int64)
-        self.log_probs    = np.zeros(C,                  dtype=np.float32)
-        self.values       = np.zeros(C,                  dtype=np.float32)
-        self.rewards      = np.zeros(C,                  dtype=np.float32)
-        self.dones        = np.zeros(C,                  dtype=np.float32)
-        self.action_masks = np.zeros((C, MAX_ACTIONS),   dtype=bool)
-        self._ptr         = 0
+        self.obs            = np.zeros((C, OBS_DIM),       dtype=np.float32)
+        self.actions        = np.zeros(C,                   dtype=np.int64)
+        self.log_probs      = np.zeros(C,                   dtype=np.float32)
+        self.values         = np.zeros(C,                   dtype=np.float32)
+        self.rewards        = np.zeros(C,                   dtype=np.float32)
+        self.dones          = np.zeros(C,                   dtype=np.float32)
+        self.action_masks   = np.zeros((C, MAX_ACTIONS),    dtype=bool)
+        self.card_ids       = np.zeros((C, N_CARD_SLOTS),   dtype=np.int64)
+        self.episode_starts = np.zeros(C,                   dtype=bool)
+        # LSTM-only: set by Trainer before filling the buffer each rollout.
+        # Shape (n_lstm_layers, lstm_hidden); None when not using LSTM.
+        self.initial_hidden_h: Optional[np.ndarray] = None
+        self.initial_hidden_c: Optional[np.ndarray] = None
+        self._ptr           = 0
 
     # ------------------------------------------------------------------
     # Writing
@@ -50,23 +56,28 @@ class RolloutBuffer:
 
     def add(
         self,
-        obs:          np.ndarray,
-        action:       int,
-        log_prob:     float,
-        value:        float,
-        reward:       float,
-        done:         bool,
-        action_mask:  np.ndarray,
+        obs:            np.ndarray,
+        action:         int,
+        log_prob:       float,
+        value:          float,
+        reward:         float,
+        done:           bool,
+        action_mask:    np.ndarray,
+        card_ids:       Optional[np.ndarray] = None,
+        episode_start:  bool = False,
     ) -> None:
         i = self._ptr
-        self.obs[i]          = obs
-        self.actions[i]      = action
-        self.log_probs[i]    = log_prob
-        self.values[i]       = value
-        self.rewards[i]      = reward
-        self.dones[i]        = float(done)
-        self.action_masks[i] = action_mask
-        self._ptr           += 1
+        self.obs[i]            = obs
+        self.actions[i]        = action
+        self.log_probs[i]      = log_prob
+        self.values[i]         = value
+        self.rewards[i]        = reward
+        self.dones[i]          = float(done)
+        self.action_masks[i]   = action_mask
+        self.episode_starts[i] = episode_start
+        if card_ids is not None:
+            self.card_ids[i] = card_ids
+        self._ptr             += 1
 
     def is_full(self) -> bool:
         return self._ptr >= self.capacity
@@ -80,6 +91,7 @@ class RolloutBuffer:
         last_value: float,
         gamma:      float = 0.99,
         gae_lambda: float = 0.95,
+        normalize:  bool  = True,
     ) -> None:
         """
         Compute GAE advantages and discounted returns in-place.
@@ -99,8 +111,11 @@ class RolloutBuffer:
         self.advantages = advantages
         self.returns    = advantages + self.values[: self.capacity]
 
-        # Normalise advantages for training stability
-        self.advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalise advantages for training stability.
+        # Skip when using multiple envs — merge() re-normalises over all envs
+        # together, which is more accurate than normalising per-env first.
+        if normalize:
+            self.advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
     # ------------------------------------------------------------------
     # Mini-batch iteration
@@ -120,4 +135,52 @@ class RolloutBuffer:
                 "advantages":   torch.from_numpy(self.advantages[idx]).to(self.device),
                 "returns":      torch.from_numpy(self.returns[idx]).to(self.device),
                 "action_masks": torch.from_numpy(self.action_masks[idx]).to(self.device),
+                "card_ids":     torch.from_numpy(self.card_ids[idx]).to(torch.int32).to(self.device),
             }
+
+    # ------------------------------------------------------------------
+    # Multi-env support
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def merge(
+        cls, buffers: list["RolloutBuffer"], device: torch.device
+    ) -> "RolloutBuffer":
+        """
+        Concatenate N full, already-computed buffers into one for a joint
+        PPO update.
+
+        Each buffer must have had ``compute_returns_and_advantages()`` called
+        before merging.  The merged buffer's capacity equals the sum of all
+        individual capacities.
+
+        Parameters
+        ----------
+        buffers:
+            List of full RolloutBuffers (one per parallel env).
+        device:
+            Device for the returned buffer's tensor operations.
+        """
+        total   = sum(b.capacity for b in buffers)
+        merged  = cls(capacity=total, device=device)
+
+        merged.obs          = np.concatenate([b.obs          for b in buffers], axis=0)
+        merged.actions      = np.concatenate([b.actions      for b in buffers], axis=0)
+        merged.log_probs    = np.concatenate([b.log_probs    for b in buffers], axis=0)
+        merged.values       = np.concatenate([b.values       for b in buffers], axis=0)
+        merged.rewards      = np.concatenate([b.rewards      for b in buffers], axis=0)
+        merged.dones        = np.concatenate([b.dones        for b in buffers], axis=0)
+        merged.action_masks = np.concatenate([b.action_masks for b in buffers], axis=0)
+        merged.card_ids     = np.concatenate([b.card_ids     for b in buffers], axis=0)
+        merged.advantages   = np.concatenate([b.advantages   for b in buffers], axis=0)
+        merged.returns      = np.concatenate([b.returns      for b in buffers], axis=0)
+        merged._ptr         = total
+
+        # Re-normalise advantages over the full merged set so the PPO update
+        # sees a consistent scale regardless of how many envs were merged.
+        merged.advantages = (
+            (merged.advantages - merged.advantages.mean())
+            / (merged.advantages.std() + 1e-8)
+        )
+
+        return merged

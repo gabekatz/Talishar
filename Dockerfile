@@ -40,3 +40,6 @@ RUN pecl install xdebug \
 RUN cp /usr/local/etc/php/php.ini-development /usr/local/etc/php/php.ini
 
 RUN a2enmod proxy proxy_http proxy_wstunnel
+
+# Tune Apache prefork for concurrent AI training requests
+COPY docker/mpm_prefork.conf /etc/apache2/mods-available/mpm_prefork.conf

@@ -34,12 +34,13 @@ class GameManager:
         base_url: str = "http://localhost:8080",
         timeout: float = 10.0,
         poll_interval: float = 0.25,
-        max_poll: int = 120,
+        max_poll: int = 40,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.poll_interval = poll_interval
         self.max_poll = max_poll
+        self._max_retries = 5
         self._session = requests.Session()
 
     # ------------------------------------------------------------------
@@ -61,19 +62,27 @@ class GameManager:
         -------
         (game_name, p1_auth_key, p2_auth_key)
         """
-        resp = self._post(
-            "/game/APIs/CreateTrainingGame.php",
-            {
-                "p1_deck": p1_deck,
-                "p2_deck": p2_deck,
-                "p2_is_ai": p2_is_ai,
-                "p1_is_ai": p1_is_ai,
-                "format": format,
-            },
-        )
-        if "error" in resp:
-            raise RuntimeError(f"CreateTrainingGame failed: {resp['error']}")
-        return resp["gameName"], resp["p1AuthKey"], resp["p2AuthKey"]
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                resp = self._post(
+                    "/game/APIs/CreateTrainingGame.php",
+                    {
+                        "p1_deck": p1_deck,
+                        "p2_deck": p2_deck,
+                        "p2_is_ai": p2_is_ai,
+                        "p1_is_ai": p1_is_ai,
+                        "format": format,
+                    },
+                )
+                if "error" in resp:
+                    raise RuntimeError(f"CreateTrainingGame failed: {resp['error']}")
+                return resp["gameName"], resp["p1AuthKey"], resp["p2AuthKey"]
+            except RuntimeError as exc:
+                last_err = exc
+                if attempt < self._max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_err  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # State
@@ -83,13 +92,21 @@ class GameManager:
         self, game_name: str, player_id: int, auth_key: str
     ) -> dict[str, Any]:
         """Fetch the current AI game state for *player_id*."""
-        resp = self._get(
-            "/game/GetAIState.php",
-            {"gameName": game_name, "playerID": player_id, "authKey": auth_key},
-        )
-        if "error" in resp:
-            raise RuntimeError(f"GetAIState failed: {resp['error']}")
-        return resp
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                resp = self._get(
+                    "/game/GetAIState.php",
+                    {"gameName": game_name, "playerID": player_id, "authKey": auth_key},
+                )
+                if "error" in resp:
+                    raise RuntimeError(f"GetAIState failed: {resp['error']}")
+                return resp
+            except RuntimeError as exc:
+                last_err = exc
+                if attempt < self._max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_err  # type: ignore[misc]
 
     def get_state_blocking(
         self, game_name: str, player_id: int, auth_key: str
@@ -139,10 +156,18 @@ class GameManager:
             "authKey": auth_key,
             **params,
         }
-        resp = self._post("/game/SubmitAIAction.php", body)
-        if "error" in resp:
-            raise RuntimeError(f"SubmitAIAction failed: {resp['error']}")
-        return resp
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                resp = self._post("/game/SubmitAIAction.php", body)
+                if "error" in resp:
+                    raise RuntimeError(f"SubmitAIAction failed: {resp['error']}")
+                return resp
+            except RuntimeError as exc:
+                last_err = exc
+                if attempt < self._max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_err  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # Helpers
@@ -156,10 +181,23 @@ class GameManager:
         url = self.base_url + path
         r = self._session.get(url, params=params, timeout=self.timeout)
         r.raise_for_status()
-        return r.json()
+        try:
+            return r.json()
+        except Exception as exc:
+            # Empty or non-JSON response — game likely ended or server errored.
+            raise RuntimeError(
+                f"Invalid JSON from GET {path} (status {r.status_code}, "
+                f"body={r.text[:120]!r})"
+            ) from exc
 
     def _post(self, path: str, body: dict) -> dict[str, Any]:
         url = self.base_url + path
         r = self._session.post(url, json=body, timeout=self.timeout)
         r.raise_for_status()
-        return r.json()
+        try:
+            return r.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Invalid JSON from POST {path} (status {r.status_code}, "
+                f"body={r.text[:120]!r})"
+            ) from exc

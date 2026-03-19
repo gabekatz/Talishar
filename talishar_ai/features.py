@@ -35,9 +35,12 @@ Card feature vector (14 floats):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .card_vocab import CardVocab
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -51,8 +54,9 @@ MAX_AURAS     = 5
 MAX_ITEMS     = 5
 MAX_ALLIES    = 3
 
-ZONE_SIZES = [MAX_HAND, MAX_ARSENAL, MAX_EQUIPMENT, MAX_AURAS, MAX_ITEMS, MAX_ALLIES]
-ZONE_DIM   = sum(ZONE_SIZES) * CARD_DIM  # 378
+ZONE_SIZES    = [MAX_HAND, MAX_ARSENAL, MAX_EQUIPMENT, MAX_AURAS, MAX_ITEMS, MAX_ALLIES]
+ZONE_DIM      = sum(ZONE_SIZES) * CARD_DIM  # 378
+N_CARD_SLOTS  = sum(ZONE_SIZES)             # 27 — one slot per card position across all zones
 
 GLOBAL_DIM  = 7   # my health, their health, resources, ap, deck, their_deck, their_hand
 PHASE_DIM   = 8   # one-hot phase
@@ -126,8 +130,23 @@ def zone_to_block(cards: list[dict], max_slots: int) -> np.ndarray:
 # State encoder
 # ---------------------------------------------------------------------------
 
+_ZONE_KEYS = ["hand", "arsenal", "equipment", "auras", "items", "allies"]
+
+
 class StateEncoder:
-    """Stateless encoder — converts a GetAIState dict to a numpy observation."""
+    """
+    Converts a GetAIState dict to numpy arrays for the model.
+
+    Parameters
+    ----------
+    vocab:
+        Optional CardVocab for card-identity encoding.  When provided,
+        ``card_ids()`` returns meaningful integer indices.  When None,
+        ``card_ids()`` returns an all-zero array (PAD).
+    """
+
+    def __init__(self, vocab: "CardVocab | None" = None) -> None:
+        self._vocab = vocab
 
     def encode(self, state: dict[str, Any]) -> np.ndarray:
         """Return a float32 array of shape (OBS_DIM,)."""
@@ -137,10 +156,7 @@ class StateEncoder:
         parts: list[np.ndarray] = []
 
         # -- Zones -----------------------------------------------------------
-        for zone_key, max_slots in zip(
-            ["hand", "arsenal", "equipment", "auras", "items", "allies"],
-            ZONE_SIZES,
-        ):
+        for zone_key, max_slots in zip(_ZONE_KEYS, ZONE_SIZES):
             parts.append(zone_to_block(my.get(zone_key, []), max_slots))
 
         # -- Global scalars --------------------------------------------------
@@ -238,6 +254,40 @@ class StateEncoder:
         obs = np.concatenate(parts)
         assert obs.shape == (OBS_DIM,), f"Expected ({OBS_DIM},), got {obs.shape}"
         return obs
+
+    def card_ids(self, state: dict[str, Any]) -> np.ndarray:
+        """
+        Return an int64 array of shape (N_CARD_SLOTS,) with the vocabulary
+        index for each card slot across all zones (in the same order as
+        ``encode()``).
+
+        Empty slots and unknown card IDs are encoded as PAD (0).
+        If no CardVocab was provided at construction, returns all-zeros.
+        """
+        ids = np.zeros(N_CARD_SLOTS, dtype=np.int64)
+        if self._vocab is None:
+            return ids
+
+        my   = state.get("myState", {})
+        ptr  = 0
+        for zone_key, max_slots in zip(_ZONE_KEYS, ZONE_SIZES):
+            cards = my.get(zone_key, [])
+            for i in range(max_slots):
+                if i < len(cards):
+                    cid = cards[i].get("cardID", "") or ""
+                    ids[ptr] = self._vocab.encode(cid)
+                ptr += 1
+        return ids
+
+    def encode_with_ids(
+        self, state: dict[str, Any]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Convenience wrapper: returns ``(obs_float, card_ids_int)``.
+
+        Equivalent to calling ``encode()`` and ``card_ids()`` separately.
+        """
+        return self.encode(state), self.card_ids(state)
 
     def action_mask(self, state: dict[str, Any]) -> np.ndarray:
         """

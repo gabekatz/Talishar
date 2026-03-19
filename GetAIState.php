@@ -129,6 +129,45 @@ function CollectLegalMoves(stdClass $gs): array
     $moves  = [];
     $nextID = 0;
 
+    // ---- Phases that need dedicated move generation -------------------------
+    $turnPhaseStr = $gs->turnPhase->turnPhase ?? '';
+
+    // INPUTCARDNAME: player must name a card (e.g. Censor hit effect).
+    // Return only the mode-30 move — passing doesn't resolve this phase.
+    if ($turnPhaseStr === 'INPUTCARDNAME') {
+        $handCards = $gs->playerHand ?? [];
+        $namedCard = !empty($handCards) ? ($handCards[0]->cardNumber ?? 'Enlightened_Strike') : 'Enlightened_Strike';
+        return [[
+            'id'          => 0,
+            'type'        => 'INPUT_CARD_NAME',
+            'mode'        => 30,
+            'params'      => ['mode' => 30, 'buttonInput' => $namedCard],
+            'description' => 'Name a card (' . $namedCard . ')',
+        ]];
+    }
+
+    // PDECK: pitch-to-deck ordering --------------------------------
+    // During PDECK, the player must choose which pitched card to put on deck
+    // bottom (mode 6).  Normal zone scanning doesn't cover this.
+    if ($turnPhaseStr === 'PDECK') {
+        foreach ($gs->playerPitch ?? [] as $idx => $pitchCard) {
+            $cardID = $pitchCard->cardNumber ?? '';
+            if ($cardID === '' || $cardID === 'CARDBACK') continue;
+            $moves[] = [
+                'id'          => $nextID++,
+                'type'        => 'PITCH_TO_DECK',
+                'mode'        => 6,
+                'cardID'      => $cardID,
+                'zone'        => 'PITCH',
+                'stats'       => CardStats($cardID),
+                'params'      => ['mode' => 6, 'cardID' => $cardID],
+                'description' => "Put on deck bottom: $cardID",
+            ];
+        }
+        // PDECK only needs pitch-to-deck moves — skip normal zone scanning
+        if (!empty($moves)) return $moves;
+    }
+
     // ---- Zone cards --------------------------------------------------------
     // Each entry: [zone label, cards array]
     $zoneSets = [
@@ -169,7 +208,10 @@ function CollectLegalMoves(stdClass $gs): array
                     $cost = AbilityCost($card->cardNumber ?? '');
                     if ($cost > $maxAffordable) continue;
                 }
-                if ($zone === 'HAND') {
+                if ($zone === 'HAND' && intval($card->action ?? 0) === 27 && $turnPhaseStr !== 'P') {
+                    // Affordability check only during main phase play (not P phase pitch).
+                    // In P phase, hand cards also use action=27 but are being pitched,
+                    // so the card's play cost is irrelevant.
                     $cardNum = $card->cardNumber ?? '';
                     $cost = max(0, (int)CardCost($cardNum));
                     if ($cost > 0) {
@@ -179,6 +221,13 @@ function CollectLegalMoves(stdClass $gs): array
                         $affordableFromRemaining = $currentResources + ($totalHandPitch - $cardPitch);
                         if ($cost > $affordableFromRemaining) continue;
                     }
+                }
+                // Arsenal affordability: playing from arsenal (mode 5) can also
+                // trigger P phase.  Filter if the hand can't cover the cost.
+                if ($zone === 'ARSENAL') {
+                    $cardNum = $card->cardNumber ?? '';
+                    $cost = max(0, (int)CardCost($cardNum));
+                    if ($cost > $currentResources + $totalHandPitch) continue;
                 }
                 $moves[] = CardMove($nextID++, $card, $zone);
             }

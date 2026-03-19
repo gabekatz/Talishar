@@ -5,8 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "flask>=3.0",
     "gymnasium>=0.29",
     "numpy>=1.24,<2",
     "requests>=2.31",
-    "torch==2.2.2",
+    "torch>=2.10.0",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.58.0",
 ]

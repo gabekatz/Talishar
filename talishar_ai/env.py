@@ -29,6 +29,7 @@ from gymnasium import spaces
 
 from .features import StateEncoder, OBS_DIM, MAX_ACTIONS
 from .game_manager import GameManager
+from .evaluation.game_stats import GameStatsCollector
 
 
 class TalisharEnv(gym.Env):
@@ -77,6 +78,7 @@ class TalisharEnv(gym.Env):
         self.action_space = spaces.Discrete(MAX_ACTIONS)
 
         self._encoder    = StateEncoder()
+        self._stats      = GameStatsCollector()
 
         # Episode state (set in reset)
         self._game_name: str  = ""
@@ -112,6 +114,7 @@ class TalisharEnv(gym.Env):
         self._prev_my_health  = state.get("myState",    {}).get("health", 20)
         self._prev_opp_health = state.get("theirState", {}).get("health", 20)
         self._step_count = 0
+        self._stats.reset(state)
 
         obs  = self._encoder.encode(state)
         info = self._make_info(state, result=None)
@@ -142,8 +145,21 @@ class TalisharEnv(gym.Env):
                 self._game_name, self.player_id, self._auth_key
             )
 
+        return self._finalize_step(next_state)
+
+    def _finalize_step(
+        self, next_state: dict[str, Any]
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """
+        Compute obs / reward / info from a fully-resolved next state.
+
+        Separated from step() so SelfPlayEnv can inject a state that has
+        already had P2's responses driven externally, bypassing the normal
+        get_state_blocking() poll.
+        """
         self._last_state = next_state
         self._step_count += 1
+        self._stats.step(next_state)
 
         terminated = self._is_terminal(next_state)
         truncated  = (not terminated) and (self._step_count >= self.max_steps)
@@ -154,8 +170,8 @@ class TalisharEnv(gym.Env):
         self._prev_opp_health = next_state.get("theirState", {}).get("health", 0)
 
         obs    = self._encoder.encode(next_state)
-        result = self._result(next_state) if terminated else None
-        info   = self._make_info(next_state, result=result)
+        result = self._result(next_state) if (terminated or truncated) else None
+        info   = self._make_info(next_state, result=result, truncated=truncated)
 
         return obs, reward, terminated, truncated, info
 
@@ -217,10 +233,15 @@ class TalisharEnv(gym.Env):
         opp_hp = state.get("theirState", {}).get("health", 1)
         return phase == "OVER" or int(my_hp) <= 0 or int(opp_hp) <= 0
 
-    def _make_info(self, state: dict, result: str | None) -> dict:
-        return {
+    def _make_info(
+        self, state: dict, result: str | None, truncated: bool = False
+    ) -> dict:
+        info: dict = {
             "legal_mask":  self._encoder.action_mask(state),
             "legal_moves": state.get("legalMoves", []),
             "raw_state":   state,
             "result":      result,
         }
+        if result is not None:
+            info["game_stats"] = self._stats.finalize(result, truncated)
+        return info

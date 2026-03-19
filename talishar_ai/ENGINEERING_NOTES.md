@@ -1,14 +1,14 @@
 # Engineering Notes: Talishar AI — Design & Reasoning
 
 This document explains every decision made when building the AI layer on top of
-the Talishar game engine, written for an aspiring ML engineer who wants to
-understand or replicate the work.
+the Talishar game engine, written for a developer learning ML who wants to
+understand *why* each piece exists, not just *what* it does.
 
 ---
 
 ## 1. Problem framing
 
-Flesh and Blood (FaB) is a two-player, imperfect-information card game.  Each
+Flesh and Blood (FaB) is a two-player, imperfect-information card game. Each
 player holds a hidden hand, makes sequential decisions, and the game ends when
 one hero's life total reaches 0.
 
@@ -23,15 +23,18 @@ We frame this as a **Markov Decision Process (MDP)**:
 | Episode | One complete game |
 
 Because we cannot observe the opponent's hand, this is strictly a **Partially
-Observable MDP (POMDP)**.  We approximate it as an MDP by treating "opponent's
-hand count" as the only hidden-state signal.  A future improvement would add
-recurrent state (LSTM) to let the policy infer hand contents from history.
+Observable MDP (POMDP)** — the agent never sees the full state of the world.
+We tackle this at two levels:
+1. **Card identity embeddings** (feature #2): give the model a richer description
+   of *what* it can see.
+2. **LSTM recurrent policy** (feature #5): give the model *memory* so it can
+   infer hidden information from the history of what it has observed.
 
 ---
 
 ## 2. Why PPO?
 
-Several RL algorithms could work here.  We chose **Proximal Policy
+Several RL algorithms could work here. We chose **Proximal Policy
 Optimisation (PPO-Clip)** for these reasons:
 
 | Criterion | PPO | DQN | MCTS |
@@ -43,8 +46,14 @@ Optimisation (PPO-Clip)** for these reasons:
 | Implementation complexity | low | medium | high |
 
 PPO's **clip** objective `min(r·A, clip(r,1-ε,1+ε)·A)` prevents the policy
-from taking steps so large that the new policy collapses.  This is the main
+from taking steps so large that the new policy collapses. This is the main
 source of stability compared to vanilla policy gradients (REINFORCE).
+
+**The ratio `r`** is `π_new(a|s) / π_old(a|s)` — how much more or less likely
+the new policy is to take the same action the old policy took. Clipping it to
+`[1-ε, 1+ε]` means "don't change your probabilities by more than ε in one
+update." This is the insight that makes PPO work: big policy updates are the
+main cause of training instability in RL, so we explicitly forbid them.
 
 ---
 
@@ -67,35 +76,27 @@ A flat feature vector works well for MLP policies and is fast to compute.
 - **Type one-hot**: card type (AA, R, DR, …) is categorical; one-hot encoding
   is the standard way to feed categorical variables to an MLP.
 - **Zero-padding**: zones like hand (max 7 cards) are zero-padded when they
-  contain fewer cards.  The network learns "empty slot = zeros".
+  contain fewer cards. The network learns "empty slot = zeros".
 
 ### Fixed vs. variable dimension
 
-FaB hands can hold 1–7 cards; equipment slots are fixed.  We allocate the
-*maximum* for each zone and pad.  This makes the observation space
+FaB hands can hold 1–7 cards; equipment slots are fixed. We allocate the
+*maximum* for each zone and pad. This makes the observation space
 `gymnasium.spaces.Box` with a fixed shape — required by most RL frameworks.
-
-### What's *not* encoded (yet)
-
-- Opponent's hand contents (hidden — only count is visible)
-- Past chain links (history)
-- Exact card identity (we use stats not card-name embeddings)
-
-These are natural Phase 4 improvements.
 
 ---
 
 ## 4. Action masking (why it matters)
 
 FaB has a **variable action space**: the number of legal moves changes every
-step (0–50+).  Vanilla PPO would assign non-zero probability to every action
-slot and occasionally sample an illegal move.  Two problems with that:
+step (0–50+). Vanilla PPO would assign non-zero probability to every action
+slot and occasionally sample an illegal move. Two problems with that:
 
 1. The environment would crash or return an error.
 2. The policy wastes capacity learning not-to-do illegal things.
 
 **Action masking** sets the logit of every illegal action to −∞ before
-softmax, so their probability is exactly 0.  The gradient never flows through
+softmax, so their probability is exactly 0. The gradient never flows through
 masked slots.
 
 Implementation in `network.py`:
@@ -103,7 +104,7 @@ Implementation in `network.py`:
 logits = logits.masked_fill(~action_mask, -1e9)
 ```
 
-The mask is a `bool` tensor of shape `(MAX_ACTIONS,)`.  It's stored in the
+The mask is a `bool` tensor of shape `(MAX_ACTIONS,)`. It's stored in the
 rollout buffer alongside the observation so we can reconstruct it during the
 PPO update.
 
@@ -121,7 +122,7 @@ obs (413) → Linear(413,256) → LayerNorm → ReLU
 
 ### Shared trunk
 
-Policy and value function share the first two layers.  This is standard in
+Policy and value function share the first two layers. This is standard in
 PPO because:
 - Both need similar game-state representations.
 - Fewer total parameters → faster training.
@@ -129,15 +130,15 @@ PPO because:
 
 ### LayerNorm instead of BatchNorm
 
-Batch Normalisation computes statistics over a mini-batch.  But during rollout
+Batch Normalisation computes statistics over a mini-batch. But during rollout
 collection we process one step at a time (batch size = 1), so batch statistics
-are meaningless.  Layer Normalisation computes statistics per-sample, which is
+are meaningless. Layer Normalisation computes statistics per-sample, which is
 stable at any batch size.
 
 ### Orthogonal initialisation
 
 `nn.init.orthogonal_` initialises weights so the matrix is orthogonal (rows
-are orthonormal).  This is the recommended init for deep RL (from OpenAI's
+are orthonormal). This is the recommended init for deep RL (from OpenAI's
 baselines) because it preserves gradient magnitude through many layers.
 
 ---
@@ -145,7 +146,7 @@ baselines) because it preserves gradient magnitude through many layers.
 ## 6. GAE — Generalised Advantage Estimation (rollout.py)
 
 The **advantage** A(s,a) = Q(s,a) − V(s) measures "how much better is this
-action than average?".  We need it to be low-variance for stable PPO updates.
+action than average?". We need it to be low-variance for stable PPO updates.
 
 **GAE** interpolates between:
 - λ=0: one-step TD error (low variance, high bias)
@@ -157,7 +158,7 @@ Aₜ  = δₜ + (γλ)·Aₜ₊₁·(1−done)             # recursive GAE
 Rₜ  = Aₜ + V(sₜ)                           # discounted return
 ```
 
-We then normalise advantages: `A ← (A − mean) / (std + ε)`.  This keeps the
+We then normalise advantages: `A ← (A − mean) / (std + ε)`. This keeps the
 gradient scale stable regardless of the reward magnitude.
 
 ---
@@ -186,7 +187,7 @@ for taking damage, providing gradient signal *every step*.
 
 **Potential-based shaping** (Ng et al. 1999) guarantees that shaping doesn't
 change the optimal policy if `shaped_reward = γ·Φ(s') − Φ(s)` where Φ is the
-potential function.  Our reward uses health totals as the potential, which is
+potential function. Our reward uses health totals as the potential, which is
 approximately potential-based.
 
 ### Clipping to [−1, 1]
@@ -210,11 +211,11 @@ LOOP:
   7. buffer.reset()
 ```
 
-**Why 512-step rollouts?**  Shorter than a full game (typically 50–150 turns),
-which means more frequent updates and better exploration.  The bootstrap value
+**Why 512-step rollouts?** Shorter than a full game (typically 50–150 turns),
+which means more frequent updates and better exploration. The bootstrap value
 approximates the return for the unfinished episode.
 
-**Why 4 epochs?**  Standard PPO uses 4–10 epochs per rollout.  More epochs
+**Why 4 epochs?** Standard PPO uses 4–10 epochs per rollout. More epochs
 squeeze more gradient signal from each batch of data; too many epochs violates
 the "on-policy" assumption (the data was collected under the *old* policy).
 
@@ -227,7 +228,7 @@ The game engine requires:
 2. A game state file `gamestate.txt` (zones, hands, turn state)
 
 `CreateTrainingGame.php` combines what the normal UI flow does in 3 steps
-(CreateGame → JoinGame → Start) into a single API call.  It:
+(CreateGame → JoinGame → Start) into a single API call. It:
 
 1. Calls `GetGameCounter()` for a unique numeric game ID
 2. Copies deck files from `Assets/`
@@ -239,71 +240,591 @@ The game engine requires:
 8. Runs `ParseGamestate.php` + `StartEffects.php` (hero start-of-game effects)
 9. Returns `{gameName, p1AuthKey, p2AuthKey}`
 
-Auth keys are how the engine authenticates actions.  The Python AI stores both
+Auth keys are how the engine authenticates actions. The Python AI stores both
 and uses `p1AuthKey` for all P1 moves.
 
 ---
 
-## 10. How to extend this
+## 10. Feature: Parallel Environments (parallel_env.py)
 
-### Better card representation
-Replace the 14-float hand-crafted vector with a **card embedding table**:
-- Build a `card_id → int_index` lookup from `CardDictionary.php`
-- Use `nn.Embedding(num_cards, 64)` to learn a dense card representation
-- Process the hand as a *set* with an attention mechanism (Transformer encoder)
+### The bottleneck problem
 
-### Self-play (Phase 4)
-Set `p2_is_ai=False` in `CreateTrainingGame.php`.  Run two `TalisharEnv`
-instances over the same `game_name` with alternating player IDs.  Periodically
-copy a frozen checkpoint to be the "opponent" policy (population-based self-play).
+Profiling the original single-env training revealed that the GPU/CPU sat idle
+most of the time. The bottleneck was not computation — it was the HTTP
+round-trips to the PHP game engine. Each `env.step()` call takes ~50–200 ms
+waiting for the server.
 
-### Recurrent policy (LSTM)
-Replace the MLP trunk with an LSTM to track hidden state (opponent hand
-contents, past chain links).  Pass `(h, c)` cell state across steps.
+With one environment, the timeline looks like:
+```
+[HTTP wait]──[model inference]──[HTTP wait]──[model inference]──...
+             (instant)                       (instant)
+```
 
-### Multi-hero generalisation
-The current observation encodes card stats generically.  To generalise across
-heroes, add a "hero one-hot" or hero embedding to the global scalars.
+### The solution: thread-based parallelism
 
-### Parallel environments
-Wrap `TalisharEnv` in `gymnasium.vector.AsyncVectorEnv` with multiple worker
-processes, each talking to its own game instance.  This multiplies sample
-throughput without changing the algorithm.
+Because the bottleneck is I/O (waiting for HTTP responses), not CPU, we can
+use **threads** rather than processes. Multiple threads can all be waiting on
+HTTP simultaneously without blocking each other.
+
+```
+env 0: [HTTP wait]──────────────[HTTP wait]──────────────...
+env 1: ──[HTTP wait]──────────────[HTTP wait]─────────────...
+env 2: ────[HTTP wait]──────────────[HTTP wait]───────────...
+env 3: ──────[HTTP wait]──────────────[HTTP wait]─────────...
+       ↑ all waiting at the same time
+       model runs one batched forward pass when all results arrive
+```
+
+`ThreadPoolExecutor` dispatches all `env.step()` calls concurrently. The model
+then processes all N observations in a single batched forward pass.
+
+### Key design decisions
+
+**Each env gets its own `GameManager` (its own `requests.Session`)**. HTTP
+sessions are not thread-safe to share. One session per env prevents race
+conditions in the connection pool.
+
+**Per-env `RolloutBuffer`**: each environment's trajectory must be kept
+separate until PPO update time. This is because **GAE is computed over
+contiguous trajectories** — if you mixed steps from different envs, the
+"next value" calculation would be wrong (env 2's next state is not a
+continuation of env 1's current state).
+
+**Global advantage normalisation**: after computing GAE per-env, we merge all
+N buffers and normalise advantages *across all envs together* before the PPO
+update. Normalising per-env first would destroy the relative scale of
+advantages across different games.
 
 ---
 
-## 11. File map
+## 11. Feature: Card Identity Embeddings (card_vocab.py, features.py, network.py)
+
+### The problem with stat-only encoding
+
+The original observation encodes each card as 14 floats (cost, power, type,
+etc.). Two different cards with the same stats look identical to the model.
+In FaB, card *identity* matters enormously — a `Timesnap Potion` and a
+`Surging Strike` might have similar stats but completely different strategic
+implications.
+
+### Embeddings: learning a card's "personality"
+
+An **embedding table** (`nn.Embedding`) maps each unique card ID to a learned
+vector of floats. Think of it as a lookup table where each row is a
+"personality vector" for that card, and the network learns what those
+personalities should be during training.
+
+```
+card_id: "timesnap_potion" → index 3847 → embedding[3847] → [0.3, -0.1, 0.7, ...]
+card_id: "surging_strike"  → index 1204 → embedding[1204] → [-0.2, 0.8, 0.1, ...]
+```
+
+These vectors are learned end-to-end: the network figures out which aspects
+of card identity matter for decision-making.
+
+### Architecture: concatenate, don't replace
+
+We **concatenate** the embedding block to the existing stat features rather
+than replacing them. This is intentional:
+
+```
+[stat features (413 floats) | card embeddings (27 slots × 32 dims = 864 floats)]
+→ Linear(1277, 256) → ...
+```
+
+The stat features still carry useful information (cost, power, etc.). The
+embeddings add *identity* on top. The network can use both.
+
+### `padding_idx=0`: the empty slot trick
+
+```python
+nn.Embedding(vocab_size, emb_dim, padding_idx=0)
+```
+
+Empty card slots (zero-padded in the observation) map to index 0. With
+`padding_idx=0`, the embedding at index 0 is always zero and its gradient
+is suppressed. This means "no card here" always produces a zero vector,
+which is exactly the right inductive bias.
+
+### Small initialisation (`std=0.01`)
+
+Embeddings are initialised with a very small normal distribution (standard
+deviation 0.01). The stat features start with typical orthogonal init, so
+their initial scale is much larger. The small embedding init prevents the
+fresh, untrained embeddings from overwhelming the already-meaningful stat
+features at the start of training.
+
+### Building the vocab (card_vocab.py)
+
+The vocab is built by parsing `GeneratedCardDictionaries.php` with a regex
+to extract all card IDs. The result is a JSON file mapping each card name
+to an integer index, which is checked in alongside the code. This is
+intentional: the vocab should be stable between runs so checkpoint
+embeddings remain interpretable.
+
+---
+
+## 12. Feature: Self-Play (training/self_play.py)
+
+### Why self-play?
+
+Training against `EncounterAI` (the server's built-in AI) has a fundamental
+limitation: **it's a fixed, weak opponent**. Once the policy consistently
+beats EncounterAI, the training signal degenerates. The agent stops learning
+because it has already found a strategy that wins against this specific
+opponent — but that strategy may not generalise.
+
+This is called **overfitting to the opponent**. The model learns to exploit
+EncounterAI's specific weaknesses rather than learning to play FaB.
+
+### The auto-curriculum intuition
+
+Self-play solves this by making the policy train against a frozen copy of
+*itself*. As the active policy improves, so does the frozen opponent (when
+rotated). This creates an **auto-curriculum**: the game is always
+approximately as hard as the agent's current skill level.
+
+This is the same technique used in AlphaGo, OpenAI Five (Dota), and most
+modern game-playing AI systems.
+
+### Implementation: frozen opponent
+
+```
+SelfPlayEnv wraps TalisharEnv(p2_is_ai=False)
+
+P1: active (learning) policy  ←── gets gradients
+P2: frozen copy of the policy ←── no gradients, weights updated periodically
+```
+
+`copy.deepcopy(model)` creates a completely independent copy of the model.
+`requires_grad_(False)` tells PyTorch not to track gradients through it —
+we're only using it for inference.
+
+### Weight rotation
+
+`SelfPlayManager.maybe_rotate()` is called after every PPO update. When
+`update_count % update_freq == 0`, it calls `update_opponent(state_dict)` on
+every SelfPlayEnv, replacing the frozen weights with the current active
+weights.
+
+**Why not rotate every update?** A too-quickly-moving target makes training
+unstable — the agent can't learn against an opponent that keeps changing.
+Rotating every 20–50 updates gives the policy enough time to improve before
+the opponent catches up.
+
+**`{k: v.clone()}`**: each tensor is explicitly cloned rather than just
+loading by reference. This ensures the frozen model has no shared tensor
+storage with the active model — if we updated the active model's weights,
+the frozen model would silently update too without the clone.
+
+### P2 driving loop
+
+`_drive_p2()` polls the game state after each P1 action and submits P2's
+responses using the frozen policy. It runs in a loop until P1 regains
+priority (or the game ends). The loop includes a sleep for when neither
+player has priority (the engine is resolving triggers/effects).
+
+---
+
+## 13. Feature: Evaluation Framework (evaluation/)
+
+### Why a separate evaluation system?
+
+The training loop optimises the policy but doesn't tell you if it's actually
+*getting better*. You need a separate, unbiased measurement system.
+
+### Game statistics (game_stats.py)
+
+`GameStatsCollector` tracks per-game metrics beyond win/loss:
+- Damage dealt and taken
+- Deck cards remaining (a proxy for resource efficiency)
+- Number of turns
+- Whether the game was truncated (hit the step limit)
+
+These give you diagnostic information. If your agent is winning but always
+running the opponent out of deck rather than reducing health, that tells you
+something about the strategy it's found.
+
+### Elo rating (elo.py)
+
+**Elo** is the rating system used in chess, originally developed by Arpad Elo.
+The key insight is that ratings should be *relative* to opponents, not
+absolute scores.
+
+```
+expected_win_probability = 1 / (1 + 10^((rating_B - rating_A) / 400))
+```
+
+After a game:
+```
+new_rating = old_rating + K × (actual_result - expected_result)
+```
+
+Where K=32 is how much a single game can change your rating. A win against
+a much stronger opponent moves your rating a lot; a win against a much weaker
+opponent moves it very little.
+
+We use Elo to track checkpoint quality over time. The EncounterAI is treated
+as a fixed reference opponent (constant Elo), so checkpoint Elo values are
+comparable across training runs.
+
+### Why not just track win rate?
+
+Win rate against a fixed opponent has a ceiling: once you win 90%+ of games,
+the signal is noise. Elo continues to differentiate between policies even
+when both beat the reference opponent, because it accounts for *margin* and
+*consistency*. More importantly, Elo lets you compare any two checkpoints
+directly via `head_to_head.py`.
+
+---
+
+## 14. Feature: Recurrent Policy / LSTM (models/lstm_network.py)
+
+### The partial observability problem, revisited
+
+In FaB, the opponent's hand is hidden. When you see your opponent pass
+priority without playing a reaction, that's information — maybe they don't
+have one. When they pitch a card, that's information about their hand. A
+policy that only sees the current state has to make decisions without this
+context.
+
+An **LSTM (Long Short-Term Memory)** network has a **hidden state** — a
+vector that persists across timesteps — that acts as a learned memory. The
+network decides what to store and what to forget at each step.
+
+### Architecture
+
+```
+obs + [optional card embeddings]
+    ↓
+Linear(obs_dim, hidden) → LayerNorm → ReLU    ← pre-LSTM encoder
+    ↓
+LSTM(hidden, lstm_hidden)                      ← recurrent memory
+    ↓
+    ├── actor:  Linear(lstm_hidden, MAX_ACTIONS) → masked Categorical
+    └── critic: Linear(lstm_hidden, 1) → V(s, h)
+```
+
+The pre-LSTM encoder compresses the raw observation into a meaningful
+representation before feeding it to the LSTM. The LSTM then updates its
+hidden state `(h, c)` at each timestep. Both `h` (hidden) and `c` (cell)
+are vectors of size `lstm_hidden` — they carry information forward.
+
+### The hidden state management problem
+
+This is where LSTM complicates the training loop significantly.
+
+**During rollout collection**: the hidden state `(h, c)` for each of the N
+parallel envs must be tracked and updated every step. When an episode ends
+(game over), that env's hidden state must be reset to zeros so the next
+game starts with a blank memory.
+
+**During PPO update**: we can't just shuffle transitions randomly anymore.
+The LSTM's re-evaluation of step 200 requires that it has seen steps 0–199
+first. Shuffling would give it a random hidden state at the start of each
+mini-batch, making the loss calculation wrong.
+
+### Sequence processing in the PPO update
+
+Instead of random mini-batches, we process each env's full rollout as one
+**sequence** per epoch:
+
+```python
+for epoch in range(n_epochs):
+    for buffer in per_env_buffers:
+        log_probs, values, entropy = model.evaluate_sequence(
+            buffer.obs,          # (T, obs_dim) — T steps in order
+            buffer.action_masks,
+            h0, c0,              # stored initial hidden state
+            episode_starts,      # where to reset h,c within the sequence
+            buffer.actions,
+        )
+        # compute PPO loss, backprop through time
+```
+
+This is called **BPTT (Backpropagation Through Time)** — gradients flow
+backwards through the sequence.
+
+### Episode boundary handling
+
+A 512-step rollout from one env will often contain multiple complete games
+(each game is ~50–150 turns). At each game boundary, the hidden state must
+be reset to zeros. We track this with an `episode_starts` boolean array
+stored in the rollout buffer.
+
+`evaluate_sequence` processes the rollout by splitting it at episode
+boundaries and processing each segment as a separate LSTM call, which is
+both correct and efficient (a single LSTM call can process a long segment
+using CUDA kernels):
+
+```
+rollout: [game 1: t=0..73] [game 2: t=74..201] [game 3: t=202..511]
+                           ↑                    ↑
+                       episode_starts[74]=True  episode_starts[202]=True
+
+process: LSTM(game1, h0=zeros) → LSTM(game2, h0=zeros) → LSTM(game3, h0=zeros)
+```
+
+### Why store the initial hidden state per buffer?
+
+We store `buf.initial_hidden_h / initial_hidden_c` — the hidden state at the
+very start of each rollout. During the PPO update (which happens after the
+rollout is collected), we replay the sequence from this stored starting point
+to get the exact same hidden-state trajectory as during collection. Without
+this, the re-evaluated log probabilities would be computed with a different
+hidden state than the original, making the PPO importance ratio `r = π_new/π_old`
+incorrect.
+
+---
+
+## 15. How to run with all features enabled
+
+```bash
+# Full command: LSTM + embeddings + 4 parallel envs + self-play
+uv run python -m scripts.train \
+  --use-lstm       --lstm-hidden 256  --lstm-layers 1 \
+  --use-embeddings --emb-dim 32 \
+  --n-envs 4 \
+  --self-play      --opponent-update-freq 20 \
+  --total-steps 2_000_000 \
+  --checkpoint-dir checkpoints/
+
+# Evaluate a checkpoint (produces Elo + game stats)
+uv run python -m scripts.evaluate \
+  --checkpoint checkpoints/model_final.pt \
+  --n-games 20 \
+  --log-dir eval_logs/
+
+# Head-to-head: compare two checkpoints directly
+uv run python -m scripts.head_to_head \
+  --checkpoint-a checkpoints/model_500000.pt \
+  --checkpoint-b checkpoints/model_final.pt \
+  --n-games 10
+```
+
+### Flag reference
+
+| Flag | Feature | Effect when omitted |
+|---|---|---|
+| `--n-envs N` | Parallel envs | 1 env (slower) |
+| `--use-embeddings` | Card ID embeddings | Float stats only |
+| `--emb-dim D` | Embedding width | 32 (default) |
+| `--self-play` | Self-play | Trains vs EncounterAI |
+| `--opponent-update-freq N` | Rotation cadence | 20 updates |
+| `--use-lstm` | Recurrent policy | MLP policy |
+| `--lstm-hidden H` | LSTM hidden size | 256 |
+| `--lstm-layers L` | Stacked LSTM layers | 1 |
+
+---
+
+## 16. Design decisions that recur across features
+
+A few principles show up in multiple places and are worth naming explicitly:
+
+### "Clone, don't reference"
+Whenever we make a copy of model weights (frozen opponent, checkpoint), we
+use `.clone()` or `copy.deepcopy()`. In PyTorch, assignment does not copy
+tensors — it creates a new reference to the same storage. Without cloning,
+"updating the active model" silently updates the frozen opponent too.
+
+### "Normalise, but only once"
+Advantage normalisation (`A = (A - mean) / std`) appears in multiple places.
+The rule is: normalise exactly once, and across the broadest possible scope.
+For multi-env training, that means normalising across all envs after merging,
+not per-env before merging (which would hide relative differences between
+games).
+
+### "Detect at runtime via duck typing"
+Rather than a class hierarchy (`LSTMActorCritic extends ActorCritic`), we
+detect model capabilities at runtime: `getattr(model, 'use_lstm', False)`.
+This keeps Trainer and PPOTrainer generic — they work with any model that
+exposes the right attributes and methods. Adding a new policy architecture
+doesn't require changing Trainer.
+
+### "Per-env buffers, merge for MLP, sequence for LSTM"
+The rollout buffer architecture (one buffer per env) works for both training
+modes. MLP: merge all buffers → shuffle → mini-batch update. LSTM: keep
+buffers separate → process each as a sequence → no shuffling. The same
+buffer class serves both paths.
+
+---
+
+## 17. MPS (Apple Metal) Compatibility Workarounds
+
+Training on Apple Silicon (M1/M2/M3) via PyTorch's MPS backend exposes several
+Metal-specific bugs. These workarounds are applied across the codebase so that
+`--device mps` works out of the box.
+
+### Problem 1: int64 tensor corruption
+
+MPS can corrupt `int64` values during CPU→GPU transfer, producing garbage
+indices (e.g. `704374636706` instead of `42`). When these indices hit
+`nn.Embedding`, PyTorch crashes with `subRange.start` errors.
+
+**Fix — int32 casting**: all `card_ids` tensors are cast to `int32` before
+moving to MPS. This is done in every location that creates card ID tensors:
+
+| File | Location |
+|---|---|
+| `training/trainer.py` | Rollout collection + bootstrap (2 sites) |
+| `training/rollout.py` | `get_batches()` |
+| `training/ppo.py` | `update_lstm()` |
+| `training/self_play.py` | P2 frozen-policy inference |
+
+```python
+card_ids_t = torch.from_numpy(card_ids_arr).to(torch.int32).to(self.device)
+```
+
+**Fix — embedding index clamping**: as a safety net, both `ActorCritic` and
+`LSTMActorCritic` clamp card IDs to valid range before the embedding lookup:
+
+```python
+card_ids = card_ids.clamp(0, self.embedding.num_embeddings - 1)
+```
+
+### Problem 2: nn.LSTM Metal gate dimension mismatch
+
+MPS has a known bug in its `nn.LSTM` implementation that produces dimension
+errors like `subRange.start (255) not less than length of dimension[2] (1)`.
+This is an internal Metal shader issue, not a shape problem in user code.
+
+**Fix — CPU routing**: `LSTMActorCritic._lstm_forward()` detects MPS and routes
+all LSTM computation through CPU, moving inputs to CPU, running the LSTM, and
+moving outputs back to MPS:
+
+```python
+def _lstm_forward(self, inp, h, c):
+    orig_device = inp.device
+    if orig_device.type == "mps":
+        out, (h_new, c_new) = self.lstm(inp.cpu(), (h.cpu(), c.cpu()))
+        return out.to(orig_device), h_new.to(orig_device), c_new.to(orig_device)
+    out, (h_new, c_new) = self.lstm(inp, (h, c))
+    return out, h_new, c_new
+```
+
+Since the bottleneck is HTTP I/O to the PHP engine (~50–200 ms per step), the
+CPU detour for LSTM (microseconds) has zero measurable impact on throughput.
+
+### Problem 3: LSTM device pinning across the lifecycle
+
+The LSTM must stay on CPU while the rest of the model lives on MPS. Several
+code paths move the entire model to MPS, undoing the CPU pin:
+
+1. **Model creation** (`scripts/train.py`): `model.to(device)` moves everything
+   to MPS. Immediately followed by `model.lstm = model.lstm.cpu()`.
+
+2. **Checkpoint resume** (`scripts/train.py`): `model.load_state_dict()` puts
+   all weights on the `map_location` device (MPS). Re-pin LSTM to CPU, then
+   rebuild the optimizer so its param groups reference the correct devices.
+   Adam buffers (`exp_avg`, `exp_avg_sq`) are also fixed up per-param:
+   ```python
+   for group in optimizer.param_groups:
+       for p in group["params"]:
+           for k, v in optimizer.state.get(p, {}).items():
+               if isinstance(v, torch.Tensor):
+                   state[k] = v.to(p.device)
+   ```
+
+3. **Trainer.train()** (`training/trainer.py`): `self.model.to(self.device)` at
+   the top of the training loop re-pins after the move.
+
+The LSTM must be pinned to CPU **before** optimizer creation so that the
+optimizer's param groups are consistent with the actual param devices from the
+start.
+
+---
+
+## 18. Tool: Deck Downloader (scripts/download_deck.py)
+
+Interactive CLI to browse and download competitive decks from
+[fabrary.net](https://fabrary.net/most-played-decks) for use in AI training.
+
+### Motivation
+
+Training against diverse decks requires a library of decks in Talishar's
+`Assets/*.txt` format. Manually transcribing decks from competitive sites is
+tedious and error-prone. This tool automates the process.
+
+### How it works
+
+1. **Scraping**: Uses Playwright (headless Chromium) to render fabrary.net's
+   JS-rendered pages. Hero names are extracted from hero image URLs in deck
+   listing entries (`content.fabrary.net/heroes/<slug>.webp`).
+
+2. **Card resolution**: fabrary uses set-specific card codes (e.g. `WTR215`,
+   `PEN319`). These are mapped to Talishar card IDs using
+   `GeneratedCardDictionaries.php`:
+   - **Direct lookup**: `GeneratedSetIDtoCardID` (4,600+ set-code mappings)
+   - **Name fallback**: For newer sets not yet in the dictionary, falls back to
+     `GeneratedCardName` reverse lookup with pitch-color heuristics
+
+3. **Deck format**: Output matches Talishar's `Assets/*.txt` format:
+   - Line 1: hero + equipment (space-separated)
+   - Line 2: main deck cards (space-separated)
+   - Lines 3+: sideboard cards (one per line)
+
+### Usage
+
+```bash
+uv sync --dev && uv run playwright install chromium
+
+# List most-played decks
+uv run python -m scripts.download_deck
+
+# Filter by hero
+uv run python -m scripts.download_deck --hero "Dorinthea"
+```
+
+### Limitations
+
+- Newer card sets (SKA, SDO, SFA) may not be fully mapped in
+  `GeneratedCardDictionaries.php` — the tool warns about unmapped cards.
+- Pitch-color heuristic for cross-set reprints can pick the wrong variant.
+- Depends on fabrary.net's current page structure; site redesigns will break
+  the scraper selectors.
+
+---
+
+## 19. File map
 
 ```
 talishar_ai/
-  requirements.txt          Python dependencies
-  __init__.py
-  game_manager.py           HTTP client for the PHP engine
-  features.py               StateEncoder: JSON → numpy obs
-  env.py                    TalisharEnv (Gymnasium)
+  pyproject.toml              Python package + deps
+  card_vocab.json             card_id → integer index (built once, checked in)
+
+  game_manager.py             HTTP client for the PHP engine
+  features.py                 StateEncoder: JSON → float obs + card_ids
+  env.py                      TalisharEnv (Gymnasium) + GameStatsCollector
+  parallel_env.py             ParallelEnvManager (ThreadPoolExecutor)
+
+  card_vocab.py               CardVocab: parse PHP dicts → int lookup
   models/
-    __init__.py
-    network.py              ActorCritic (masked PPO policy)
+    network.py                ActorCritic (MLP, use_embeddings opt.)
+    lstm_network.py           LSTMActorCritic (LSTM, use_embeddings opt.)
   training/
-    __init__.py
-    rollout.py              RolloutBuffer (GAE)
-    ppo.py                  PPOTrainer (clip + value + entropy)
-    trainer.py              Main collect→update loop
+    rollout.py                RolloutBuffer (GAE, episode_starts, LSTM init hidden)
+    ppo.py                    PPOTrainer: update() [MLP] + update_lstm() [LSTM]
+    trainer.py                Main collect→update loop (handles both models)
+    self_play.py              SelfPlayEnv + SelfPlayManager
+  evaluation/
+    elo.py                    EloTracker (K=32, JSON persistence)
+    game_stats.py             GameStatsCollector + GameStats dataclass
+    logger.py                 EvalLogger (CSV + Elo JSON)
   scripts/
-    __init__.py
-    train.py                CLI: python -m talishar_ai.scripts.train
-    evaluate.py             CLI: python -m talishar_ai.scripts.evaluate
-  ENGINEERING_NOTES.md      ← this file
+    train.py                  CLI: training entry-point
+    evaluate.py               CLI: evaluate checkpoint vs EncounterAI
+    head_to_head.py           CLI: checkpoint vs checkpoint Elo match
+    download_deck.py          CLI: browse/download competitive decks from fabrary.net
 
 PHP (repo root / APIs/):
-  GetAIState.php            Structured JSON state + legalMoves[]
-  SubmitAIAction.php        JSON POST action injection
-  APIs/CreateTrainingGame.php  Programmatic game creation
+  GetAIState.php              Structured JSON state + legalMoves[]
+  SubmitAIAction.php          JSON POST action injection
+  APIs/CreateTrainingGame.php Programmatic game creation
 ```
 
 ---
 
-## 12. Quick-start checklist
+## 20. Quick-start checklist
 
 ```bash
 # 1. Start the game engine
@@ -311,21 +832,26 @@ bash start.sh
 
 # 2. Install Python deps
 cd talishar_ai
-pip install -r requirements.txt
+uv sync
 
 # 3. Verify game creation
 curl -s -X POST http://localhost:8080/APIs/CreateTrainingGame.php \
   -H "Content-Type: application/json" \
   -d '{"p1_deck":"Ira","p2_deck":"Ira","p2_is_ai":true}' | python -m json.tool
 
-# 4. Train (small test run)
-python -m talishar_ai.scripts.train \
-  --base-url http://localhost:8080 \
-  --p1-deck Ira --p2-deck Ira \
-  --total-steps 5000 --rollout-steps 128
+# 4. Quick smoke test (MLP, 1 env, no extras)
+uv run python -m scripts.train \
+  --total-steps 2000 --rollout-steps 128
 
-# 5. Evaluate
-python -m talishar_ai.scripts.evaluate \
+# 5. Full-featured training run
+uv run python -m scripts.train \
+  --use-lstm --lstm-hidden 256 \
+  --use-embeddings --emb-dim 32 \
+  --n-envs 4 --self-play \
+  --total-steps 2_000_000
+
+# 6. Evaluate a checkpoint
+uv run python -m scripts.evaluate \
   --checkpoint checkpoints/model_final.pt \
-  --n-games 10
+  --n-games 20 --log-dir eval_logs/
 ```
