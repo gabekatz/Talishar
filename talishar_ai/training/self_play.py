@@ -69,6 +69,11 @@ class SelfPlayEnv(gym.Env):
     encoder:
         StateEncoder (optionally with CardVocab) for encoding P2's observations.
         Should match the active model's embedding configuration.
+    p2_temperature:
+        Sampling temperature for the frozen opponent.  1.0 = same distribution
+        as the policy; <1 = sharper (more exploitative); >1 = more random.
+        Using sampling instead of argmax prevents the frozen opponent from
+        collapsing to a single degenerate action (e.g. always passing).
     poll_sleep:
         Seconds to sleep when neither player has priority (engine processing).
     max_drive_iters:
@@ -83,6 +88,7 @@ class SelfPlayEnv(gym.Env):
         active_model:   ActorCritic,
         device:         torch.device,
         encoder:        StateEncoder | None = None,
+        p2_temperature: float = 1.0,
         poll_sleep:     float = 0.1,
         max_drive_iters: int  = 200,
     ) -> None:
@@ -94,6 +100,7 @@ class SelfPlayEnv(gym.Env):
         self._env            = env
         self._device         = device
         self._encoder        = encoder or StateEncoder()
+        self._p2_temperature = p2_temperature
         self._poll_sleep     = poll_sleep
         self._max_iters      = max_drive_iters
 
@@ -167,9 +174,11 @@ class SelfPlayEnv(gym.Env):
                 "legal_mask":  self._env._encoder.action_mask(state),
                 "legal_moves": state.get("legalMoves", []),
                 "raw_state":   state,
-                "result":      "loss",
+                "result":      "truncated",
             }
-            return obs, -1.0, False, True, info
+            # Neutral reward: P2 failures (pass-loop, undo-loop, server error)
+            # are not P1's fault — penalizing P1 poisons the learning signal.
+            return obs, 0.0, False, True, info
 
         # Delegate all reward / obs / info logic to the inner env
         return self._env._finalize_step(resolved)
@@ -205,7 +214,7 @@ class SelfPlayEnv(gym.Env):
 
     def _drive_p2(self, state_after_p1: dict[str, Any]) -> dict[str, Any]:
         """
-        Poll P2's priority and take greedy frozen-policy actions until P1
+        Poll P2's priority and sample frozen-policy actions until P1
         regains priority or the game terminates.
 
         Returns the game state from P1's perspective, ready for _finalize_step.
@@ -219,13 +228,32 @@ class SelfPlayEnv(gym.Env):
 
         _UNDO_MODES = {10000, 10001, 10003}
         _PASS_MODE  = 99
-        total_undo  = 0   # total forced-cancel submissions this drive call
-        consec_pass = 0   # consecutive pass actions without state change
+        # After this many consecutive *chosen* passes (when other actions
+        # existed), filter pass from the move list so P2 takes a real action.
+        _PASS_PATIENCE    = 3
+        _MAX_IDLE_POLLS   = 60   # max polls where neither player has priority
+        _MAX_TOTAL_ITERS  = 500  # safety cap on ALL iterations (incl. auto-pass)
+        _LOG_INTERVAL     = 50   # log diagnostics every N iterations
 
-        for _ in range(self._max_iters):
+        total_undo     = 0   # total forced-cancel submissions this drive call
+        consec_pass    = 0   # consecutive policy-chosen pass actions
+        idle_polls     = 0   # polls where neither player had priority
+        total_iters    = 0   # all iterations (for safety cap + logging)
+        auto_passes    = 0   # auto-pass count (for diagnostics)
+
+        while idle_polls < _MAX_IDLE_POLLS and total_iters < _MAX_TOTAL_ITERS:
+            total_iters += 1
+
+            # Periodic diagnostics — helps identify what's stalling.
+            if total_iters % _LOG_INTERVAL == 0:
+                print(
+                    f"[_drive_p2] game {game_name} iter={total_iters} "
+                    f"auto_pass={auto_passes} idle={idle_polls} "
+                    f"undo={total_undo}"
+                )
+
             # Fast path: if terminal already (e.g. P1 died from an on-hit)
             if TalisharEnv._is_terminal(state_after_p1):
-                # Block until P1's state is fully resolved (phase=OVER or legal moves ready)
                 return gm.get_state_blocking(game_name, p1_id, p1_key)
 
             # Check P2's state
@@ -235,20 +263,14 @@ class SelfPlayEnv(gym.Env):
                 return gm.get_state_blocking(game_name, p1_id, p1_key)
 
             if p2_state.get("havePriority") and p2_state.get("legalMoves"):
-                # Filter undo/cancel loop modes — PHP already removes them from
-                # playerPrompt.buttons, but they can still appear via the
-                # playerInputPopUp path (PopupMoves has no filter) or other paths.
-                # Strategy: prefer non-undo moves when available; only fall back
-                # to undo/cancel when it's the sole option (e.g. P-phase with no
-                # pitch cards — CANCEL is the only escape and must be submitted).
+                idle_polls = 0  # game is progressing — reset idle counter
+
+                # Filter undo/cancel loop modes.
                 all_moves   = p2_state["legalMoves"]
                 non_undo    = [m for m in all_moves if m.get("mode") not in _UNDO_MODES]
                 valid_moves = non_undo if non_undo else all_moves
 
                 # Count total forced-cancel submissions this drive call.
-                # The activate→cancel loop resets consecutive counts on each
-                # real move, so we track the running total instead.
-                # 5 forced cancels in one P1-step = P2 is looping; truncate fast.
                 if not non_undo:
                     total_undo += 1
                     if total_undo >= 5:
@@ -257,15 +279,32 @@ class SelfPlayEnv(gym.Env):
                             f"in game {game_name}"
                         )
 
+                # Separate pass moves from real (non-pass) moves.
+                non_pass = [m for m in valid_moves
+                            if m.get("mode") != _PASS_MODE
+                            and m["params"].get("mode") != _PASS_MODE]
+
+                # Fast path: pass is the only legal action — auto-submit it
+                # without model inference.  This is normal gameplay (e.g. P2
+                # has no blocks/reactions during combat) and not a stuck state.
+                if not non_pass:
+                    auto_passes += 1
+                    state_after_p1 = gm.submit_action(
+                        game_name, p2_id, p2_key, valid_moves[0]["params"]
+                    )
+                    continue
+
+                # After several consecutive policy-chosen passes, remove pass
+                # from the options so P2 is forced to take a real action.
+                if consec_pass >= _PASS_PATIENCE:
+                    valid_moves = non_pass
+                    consec_pass = 0
+
                 # P2 has a decision — sample from frozen policy.
-                # Build a filtered state so the encoder's action mask aligns
-                # with the valid_moves indices we'll index into below.
                 p2_state_filtered = {**p2_state, "legalMoves": valid_moves}
 
                 obs2  = self._encoder.encode(p2_state_filtered)
                 mask2 = self._encoder.action_mask(p2_state_filtered)
-
-                # Card IDs for frozen policy (non-zero only when embeddings on)
                 ids2 = self._encoder.card_ids(p2_state_filtered)
 
                 obs_t  = torch.from_numpy(obs2).unsqueeze(0).to(self._frozen_device)
@@ -285,20 +324,16 @@ class SelfPlayEnv(gym.Env):
                             obs_t, mask_t,
                             ids_t if use_emb else None,
                         )
-                    p2_action = int(logits.argmax(dim=-1).item())
+                    dist = torch.distributions.Categorical(
+                        logits=logits / self._p2_temperature
+                    )
+                    p2_action = int(dist.sample().item())
 
                 move2 = valid_moves[p2_action]
 
-                # Detect pass-loop: P2 keeps choosing pass without the
-                # game advancing (e.g. after a hit-effect that doesn't
-                # consume priority).  10 consecutive passes → stuck.
+                # Track consecutive passes for the filter above.
                 if move2["params"].get("mode") == _PASS_MODE:
                     consec_pass += 1
-                    if consec_pass >= 10:
-                        raise RuntimeError(
-                            f"P2 stuck in pass loop ({consec_pass} consecutive "
-                            f"passes) in game {game_name}"
-                        )
                 else:
                     consec_pass = 0
 
@@ -308,21 +343,49 @@ class SelfPlayEnv(gym.Env):
                 continue  # re-check after P2 acts
 
             # P2 doesn't have priority — check if P1 has legal moves ready.
-            # Must check legalMoves too: the engine can set havePriority=True
-            # before the legal-moves list is populated, which would cause the
-            # trainer to sample an action against an empty list.
             p1_state = gm.get_state(game_name, p1_id, p1_key)
             if TalisharEnv._is_terminal(p1_state):
                 return p1_state
             if p1_state.get("havePriority") and p1_state.get("legalMoves"):
                 return p1_state
 
-            # Neither player has priority: engine is processing (e.g. triggers
-            # resolving, animations).  Wait briefly and retry.
+            # Neither player has priority: engine is processing.
+            idle_polls += 1
             time.sleep(self._poll_sleep)
 
-        # Safety fallback — should not normally be reached
-        return gm.get_state_blocking(game_name, p1_id, p1_key)
+        # ---- Diagnostics on stall ----
+        # Fetch both players' states for the error message.
+        def _state_summary(state: dict) -> str:
+            phase = (state.get("phase") or {}).get("turnPhase", "?")
+            has_pri = state.get("havePriority", False)
+            moves = state.get("legalMoves", [])
+            move_types = [
+                f"{m.get('type','?')}(m{m.get('mode','?')})"
+                for m in moves[:8]
+            ]
+            pending = state.get("pendingDecision")
+            pending_str = ""
+            if pending:
+                pending_str = f" pending={pending.get('type','?')}"
+            return (
+                f"phase={phase} pri={has_pri} "
+                f"moves=[{', '.join(move_types)}]{pending_str}"
+            )
+
+        try:
+            p2_final = gm.get_state(game_name, p2_id, p2_key)
+            p1_final = gm.get_state(game_name, p1_id, p1_key)
+            p2_summary = _state_summary(p2_final)
+            p1_summary = _state_summary(p1_final)
+        except Exception:
+            p2_summary = p1_summary = "<fetch failed>"
+
+        reason = "idle timeout" if idle_polls >= _MAX_IDLE_POLLS else "iteration cap"
+        raise RuntimeError(
+            f"_drive_p2 stalled in game {game_name} ({reason}): "
+            f"iters={total_iters} auto_pass={auto_passes} idle={idle_polls} | "
+            f"P1=[{p1_summary}] P2=[{p2_summary}]"
+        )
 
 
 class SelfPlayManager:

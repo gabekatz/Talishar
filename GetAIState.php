@@ -269,13 +269,14 @@ function CollectLegalMoves(stdClass $gs): array
         if (!isset($btn->mode)) continue;
         $mode  = intval($btn->mode);
         if (isset($excludedModes[$mode])) continue;
-        $value = $btn->value ?? '';
+        $value = $btn->buttonInput ?? $btn->value ?? '';
+        $label = $btn->caption ?? $btn->text ?? '';
         $moves[] = [
             'id'          => $nextID++,
             'type'        => 'BUTTON',
             'mode'        => $mode,
             'params'      => array_filter(['mode' => $mode, 'buttonInput' => $value], fn($v) => $v !== ''),
-            'description' => $btn->text ?? "Button (mode $mode)",
+            'description' => $label ?: "Button (mode $mode)",
         ];
     }
 
@@ -381,17 +382,32 @@ function PopupMoves($popup, int &$nextID): array
 {
     $moves = [];
 
-    // Button choices in the popup (BUTTONINPUT, YESNO, modal choices)
-    foreach ($popup->popup->buttons ?? [] as $btn) {
+    // Button choices (BUTTONINPUT, YESNO, CHOOSENUMBER, CHOOSETOP, etc.)
+    // BuildPlayerInputPopupFull stores buttons at $popup->buttons (NOT
+    // inside $popup->popup).  CreateButtonAPI uses ->buttonInput/->caption.
+    foreach ($popup->buttons ?? [] as $btn) {
         if (!isset($btn->mode)) continue;
         $mode  = intval($btn->mode);
-        $value = $btn->value ?? '';
+        $value = $btn->buttonInput ?? $btn->value ?? '';
+        $label = $btn->caption ?? $btn->text ?? $value;
         $moves[] = [
             'id'          => $nextID++,
             'type'        => 'POPUP_CHOICE',
             'mode'        => $mode,
             'params'      => array_filter(['mode' => $mode, 'buttonInput' => $value], fn($v) => $v !== ''),
-            'description' => 'Choose: ' . ($btn->text ?? $value),
+            'description' => 'Choose: ' . $label,
+        ];
+    }
+
+    // Text-based multi-choice checkboxes (MULTICHOOSETEXT, etc.)
+    // Each checkbox is a selectable option; AI picks one at a time.
+    foreach ($popup->multiChooseText ?? [] as $chk) {
+        $moves[] = [
+            'id'          => $nextID++,
+            'type'        => 'CHOOSE_CARD',
+            'mode'        => 19,
+            'params'      => ['mode' => 19, 'chkCount' => 1, 'chk0' => (string)($chk->value ?? $chk->input ?? 0)],
+            'description' => 'Choose: ' . ($chk->label ?? ''),
         ];
     }
 
@@ -474,6 +490,7 @@ function BuildCombatChain(stdClass $gs): ?array
         'piercing'         => $cc->piercing         ?? false,
         'phantasm'         => $cc->phantasm         ?? false,
         'wager'            => $cc->wager            ?? false,
+        'activeOnHits'     => $cc->activeOnHits     ?? false,
         'damagePrevention' => $cc->damagePrevention ?? 0,
         'attackTarget'     => $cc->attackTarget     ?? [],
         'reactions'        => array_map(
@@ -505,8 +522,8 @@ function BuildPendingDecision(stdClass $gs): ?array
     $phaseType = $gs->turnPhase->turnPhase ?? 'UNKNOWN';
     $options   = [];
 
-    foreach ($popup->popup->buttons ?? [] as $btn) {
-        $options[] = ['text' => $btn->text ?? '', 'value' => $btn->value ?? ''];
+    foreach ($popup->buttons ?? [] as $btn) {
+        $options[] = ['text' => $btn->caption ?? $btn->text ?? '', 'value' => $btn->buttonInput ?? $btn->value ?? ''];
     }
     foreach ($popup->popup->cards ?? [] as $card) {
         $options[] = ['cardID' => $card->cardNumber ?? '', 'override' => $card->actionDataOverride ?? ''];

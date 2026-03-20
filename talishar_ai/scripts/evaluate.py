@@ -34,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from talishar_ai.game_manager import GameManager
 from talishar_ai.env import TalisharEnv
 from talishar_ai.models.network import ActorCritic
+from talishar_ai.models.lstm_network import LSTMActorCritic
+from talishar_ai.features import StateEncoder
 from talishar_ai.evaluation import EloTracker, EvalLogger
 from talishar_ai.evaluation.game_stats import GameStats
 
@@ -53,9 +55,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def play_game(
-    env:    TalisharEnv,
-    model:  ActorCritic,
-    device: torch.device,
+    env:     TalisharEnv,
+    model:   ActorCritic | LSTMActorCritic,
+    device:  torch.device,
+    encoder: StateEncoder | None = None,
 ) -> tuple[str, GameStats]:
     """
     Play one complete game greedily.
@@ -65,16 +68,30 @@ def play_game(
     (result, game_stats)
         result is "win", "loss", or "draw".
     """
+    is_lstm = getattr(model, "use_lstm", False)
+    use_emb = getattr(model, "use_embeddings", False)
+    enc = encoder or StateEncoder()
+
     obs_np, info = env.reset()
     done = False
+
+    if is_lstm:
+        hh, hc = model.init_hidden(1, device)
 
     while not done:
         obs  = torch.from_numpy(obs_np).unsqueeze(0).to(device)
         mask = torch.from_numpy(info["legal_mask"]).unsqueeze(0).to(device)
+        ids_t = None
+        if use_emb:
+            ids = enc.card_ids(info["raw_state"])
+            ids_t = torch.from_numpy(ids).unsqueeze(0).to(torch.int32).to(device)
 
         with torch.no_grad():
-            logits, _ = model(obs, mask)
-            action    = int(logits.argmax(dim=-1).item())
+            if is_lstm:
+                logits, _, hh, hc = model(obs, mask, hh, hc, ids_t)
+            else:
+                logits, _ = model(obs, mask, ids_t)
+            action = int(logits.argmax(dim=-1).item())
 
         obs_np, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
@@ -90,6 +107,7 @@ def _fmt_stats(stats: GameStats | None) -> str:
     return (
         f"dmg={stats.damage_dealt:>2}↑ {stats.damage_taken:>2}↓  "
         f"deck={stats.deck_remaining_p1}/{stats.deck_remaining_p2}  "
+        f"equip_lost={stats.equip_lost_p1}/{stats.equip_lost_p2}  "
         f"steps={stats.total_steps}"
         + ("  DECKOUT" if stats.deck_out   else "")
         + ("  TRUNC"   if stats.truncated  else "")
@@ -100,16 +118,31 @@ def main() -> None:
     args   = parse_args()
     device = torch.device(args.device)
 
-    ckpt  = torch.load(args.checkpoint, map_location=device)
-    model = ActorCritic(hidden=args.hidden).to(device)
-    model.load_state_dict(ckpt["model_state"])
+    ckpt = torch.load(args.checkpoint, map_location=device)
+    sd   = ckpt["model_state"]
+    has_lstm   = any("lstm" in k for k in sd)
+    has_emb    = "embedding.weight" in sd
+    emb_dim    = sd["embedding.weight"].shape[1] if has_emb else 32
+    vocab_size = sd["embedding.weight"].shape[0] if has_emb else 5000
+    if has_lstm:
+        model = LSTMActorCritic(
+            use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+        ).to(device)
+    else:
+        model = ActorCritic(
+            hidden=args.hidden, use_embeddings=has_emb, emb_dim=emb_dim,
+            vocab_size=vocab_size,
+        ).to(device)
+    model.load_state_dict(sd)
     model.eval()
 
     ckpt_step  = ckpt.get("step", 0)
     ckpt_label = f"model_{ckpt_step}"
-    print(f"Loaded {args.checkpoint}  (step {ckpt_step:,})")
+    arch = f"lstm={'yes' if has_lstm else 'no'} emb={'yes' if has_emb else 'no'}"
+    print(f"Loaded {args.checkpoint}  (step {ckpt_step:,}, {arch})")
 
-    gm  = GameManager(base_url=args.base_url)
+    gm      = GameManager(base_url=args.base_url)
+    encoder = StateEncoder()
     env = TalisharEnv(
         game_manager=gm,
         p1_deck=args.p1_deck,
@@ -125,7 +158,7 @@ def main() -> None:
     wins = losses = draws = 0
 
     for i in range(1, args.n_games + 1):
-        result, stats = play_game(env, model, device)
+        result, stats = play_game(env, model, device, encoder)
 
         if result == "win":
             wins   += 1

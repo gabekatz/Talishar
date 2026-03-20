@@ -436,18 +436,27 @@ def main() -> None:
 
     if _args.p2_checkpoint:
         ckpt = torch.load(_args.p2_checkpoint, map_location=_p2_device)
-        # Detect model type from state dict keys
+        # Detect model type and architecture from state dict keys
         from talishar_ai.models.network import ActorCritic
         from talishar_ai.models.lstm_network import LSTMActorCritic
-        has_lstm = any("lstm" in k for k in ckpt["model_state"])
+        sd = ckpt["model_state"]
+        has_lstm   = any("lstm" in k for k in sd)
+        has_emb    = "embedding.weight" in sd
+        emb_dim    = sd["embedding.weight"].shape[1] if has_emb else 32
+        vocab_size = sd["embedding.weight"].shape[0] if has_emb else 5000
         if has_lstm:
-            _p2_model   = LSTMActorCritic().to(_p2_device)
+            _p2_model   = LSTMActorCritic(
+                use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+            ).to(_p2_device)
             _p2_is_lstm = True
         else:
-            _p2_model = ActorCritic().to(_p2_device)
-        _p2_model.load_state_dict(ckpt["model_state"])
+            _p2_model = ActorCritic(
+                use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+            ).to(_p2_device)
+        _p2_model.load_state_dict(sd)
         _p2_model.eval()
-        print(f"[demo_server] Loaded P2 checkpoint: {_args.p2_checkpoint}")
+        print(f"[demo_server] Loaded P2 checkpoint: {_args.p2_checkpoint} "
+              f"(lstm={has_lstm}, embeddings={has_emb})")
     else:
         print("[demo_server] No P2 checkpoint — P2 will play randomly.")
 

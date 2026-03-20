@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from talishar_ai.game_manager import GameManager
 from talishar_ai.features import StateEncoder
 from talishar_ai.models.network import ActorCritic
+from talishar_ai.models.lstm_network import LSTMActorCritic
 from talishar_ai.evaluation import EloTracker, EvalLogger
 from talishar_ai.evaluation.game_stats import GameStats, GameStatsCollector
 
@@ -75,18 +76,28 @@ def _result_from_p1(state_for_p1: dict) -> str:
     return "draw"
 
 def _greedy_action(
-    model:   ActorCritic,
+    model:   ActorCritic | LSTMActorCritic,
     state:   dict,
     encoder: StateEncoder,
     device:  torch.device,
-) -> int:
+    hidden:  tuple | None = None,
+) -> tuple[int, tuple | None]:
     obs  = encoder.encode(state)
     mask = encoder.action_mask(state)
     obs_t  = torch.from_numpy(obs).unsqueeze(0).to(device)
     mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+    ids_t  = None
+    if getattr(model, "use_embeddings", False):
+        ids = encoder.card_ids(state)
+        ids_t = torch.from_numpy(ids).unsqueeze(0).to(torch.int32).to(device)
     with torch.no_grad():
-        logits, _ = model(obs_t, mask_t)
-    return int(logits.argmax(dim=-1).item())
+        is_lstm = getattr(model, "use_lstm", False)
+        if is_lstm and hidden is not None:
+            logits, _, hh, hc = model(obs_t, mask_t, hidden[0], hidden[1], ids_t)
+            hidden = (hh, hc)
+        else:
+            logits, _ = model(obs_t, mask_t, ids_t)
+    return int(logits.argmax(dim=-1).item()), hidden
 
 
 # -----------------------------------------------------------------------
@@ -119,6 +130,12 @@ def play_game(
     keys   = {1: p1_key, 2: p2_key}
     models = {1: model_p1, 2: model_p2}
 
+    # Per-player LSTM hidden state
+    hiddens: dict[int, tuple | None] = {1: None, 2: None}
+    for pid, mdl in models.items():
+        if getattr(mdl, "use_lstm", False):
+            hiddens[pid] = mdl.init_hidden(1, device)
+
     stats = GameStatsCollector()
 
     # Fetch initial state for stats baseline (from P1's perspective)
@@ -144,7 +161,9 @@ def play_game(
             if not state.get("havePriority") or not state.get("legalMoves"):
                 continue
 
-            action = _greedy_action(models[player_id], state, encoder, device)
+            action, hiddens[player_id] = _greedy_action(
+                models[player_id], state, encoder, device, hiddens[player_id],
+            )
             move   = state["legalMoves"][action]
             gm.submit_action(game_name, player_id, keys[player_id], move["params"])
             step  += 1
@@ -194,10 +213,23 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _load_model(path: str, hidden: int, device: torch.device) -> tuple[ActorCritic, int, str]:
-    ckpt  = torch.load(path, map_location=device)
-    model = ActorCritic(hidden=hidden).to(device)
-    model.load_state_dict(ckpt["model_state"])
+def _load_model(path: str, hidden: int, device: torch.device) -> tuple[ActorCritic | LSTMActorCritic, int, str]:
+    ckpt = torch.load(path, map_location=device)
+    sd   = ckpt["model_state"]
+    has_lstm   = any("lstm" in k for k in sd)
+    has_emb    = "embedding.weight" in sd
+    emb_dim    = sd["embedding.weight"].shape[1] if has_emb else 32
+    vocab_size = sd["embedding.weight"].shape[0] if has_emb else 5000
+    if has_lstm:
+        model = LSTMActorCritic(
+            use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+        ).to(device)
+    else:
+        model = ActorCritic(
+            hidden=hidden, use_embeddings=has_emb, emb_dim=emb_dim,
+            vocab_size=vocab_size,
+        ).to(device)
+    model.load_state_dict(sd)
     model.eval()
     step  = ckpt.get("step", 0)
     label = f"model_{step}"

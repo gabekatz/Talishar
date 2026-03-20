@@ -1,16 +1,28 @@
 """
-scripts/download_deck.py — Interactive CLI to browse and download decks from
-fabrary.net for use in Talishar AI training.
+scripts/download_deck.py — CLI to browse and download decks from fabrary.net
+for use in Talishar AI training.
 
 Usage
 -----
-uv run python -m scripts.download_deck --hero "Ira"
-uv run python -m scripts.download_deck --hero "Kayo"
-uv run python -m scripts.download_deck              # lists all heroes
+# Interactive: browse by hero
+python -m talishar_ai.scripts.download_deck --hero "Ira"
+python -m talishar_ai.scripts.download_deck              # lists all decks
+
+# Bulk: auto-download best deck per unique hero
+python -m talishar_ai.scripts.download_deck --bulk
+python -m talishar_ai.scripts.download_deck --bulk --format cc
+python -m talishar_ai.scripts.download_deck --bulk --format blitz
+python -m talishar_ai.scripts.download_deck --bulk --format silver-age
+
+# Interactive with format filter
+python -m talishar_ai.scripts.download_deck --hero "Bravo" --format cc
 
 The tool scrapes https://fabrary.net/most-played-decks, lets you browse by
 hero, inspect deck contents, and download decks to Assets/ in the format
 expected by CreateTrainingGame.php.
+
+In --bulk mode, it automatically downloads the highest win% deck for each
+unique hero found in the listing, saving each to Assets/<HeroName>.txt.
 """
 
 from __future__ import annotations
@@ -82,11 +94,21 @@ def _load_name_to_ids() -> dict[str, list[str]]:
 # Scraping helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_deck_list(max_pages: int = 6) -> list[dict]:
+def _fetch_deck_list(max_pages: int = 6, format_filter: str | None = None) -> list[dict]:
     """
     Fetch the most-played decks listing from fabrary.net.
 
-    Returns a list of dicts with keys: name, href, url.
+    Parameters
+    ----------
+    max_pages : int
+        Number of pagination pages to scrape.
+    format_filter : str | None
+        Game format to filter by (e.g. "cc", "blitz", "living legend").
+        The scraper will try to click the matching format tab/button on
+        the page.  If no UI filter is found, decks are filtered client-side
+        by checking format text in each deck entry.
+
+    Returns a list of dicts with keys: name, hero, href, url, win_rate, format.
     """
     from playwright.sync_api import sync_playwright
 
@@ -95,63 +117,220 @@ def _fetch_deck_list(max_pages: int = 6) -> list[dict]:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
+        page.goto(
+            "https://fabrary.net/most-played-decks",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        page.wait_for_selector('a[href*="/decks/"]', timeout=15000)
+
+        # Try to click a format filter on the page if requested
+        format_clicked = False
+        if format_filter:
+            format_clicked = _try_click_format_filter(page, format_filter)
+
         for pg in range(1, max_pages + 1):
-            url = "https://fabrary.net/most-played-decks"
-            if pg > 1:
-                url += f"?page={pg}"
             print(f"[deck] Fetching page {pg}...", end=" ", flush=True)
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for deck links to appear (ads keep network active forever)
-            page.wait_for_selector('a[href*="/decks/"]', timeout=15000)
 
-            links = page.query_selector_all('a[href*="/decks/"]')
-            page_decks = []
-            for link in links:
-                href = link.get_attribute("href") or ""
-                name = link.inner_text().split("\n")[0].strip()
-                if not href or not name:
-                    continue
-
-                # Extract hero from hero image in parent container.
-                # The image URL contains the hero slug:
-                #   content.fabrary.net/heroes/kayo-armed-and-dangerous.webp
-                hero = ""
-                try:
-                    hero_info = link.evaluate('''el => {
-                        let p = el;
-                        for (let i = 0; i < 5; i++) {
-                            p = p.parentElement;
-                            if (!p) break;
-                            const imgs = p.querySelectorAll("img");
-                            for (const img of imgs) {
-                                const src = img.src || "";
-                                if (src.includes("/heroes/")) {
-                                    const slug = src.split("/heroes/")[1].replace(".webp", "");
-                                    return slug;
-                                }
-                            }
-                        }
-                        return "";
-                    }''')
-                    hero = hero_info.replace("-", " ").title() if hero_info else ""
-                except Exception:
-                    pass
-
-                page_decks.append({
-                    "name": name,
-                    "hero": hero,
-                    "href": href,
-                    "url": f"https://fabrary.net{href}",
-                })
+            page_decks = _extract_deck_links(page)
             print(f"{len(page_decks)} decks")
             decks.extend(page_decks)
 
             if not page_decks:
                 break
 
+            # Navigate to next page via the "Next" button (JS-driven pagination)
+            if pg < max_pages:
+                next_btn = page.query_selector('button:has-text("Next")')
+                if not next_btn or next_btn.is_disabled():
+                    print("[deck] No more pages.")
+                    break
+                next_btn.click()
+                # Wait for the page content to refresh
+                page.wait_for_timeout(2000)
+                page.wait_for_selector('a[href*="/decks/"]', timeout=15000)
+
         browser.close()
 
+    # Client-side format filtering if we couldn't click a UI filter
+    if format_filter and not format_clicked:
+        norm = format_filter.lower().replace("-", " ").replace("_", " ")
+        before = len(decks)
+        decks = [d for d in decks if _format_matches(d.get("format", ""), norm)]
+        print(f"[deck] Format filter '{format_filter}': {before} → {len(decks)} decks")
+
     return decks
+
+
+def _try_click_format_filter(page, format_filter: str) -> bool:
+    """Try to find and click a format filter button/tab/dropdown on the page."""
+    norm = format_filter.lower().replace("-", " ").replace("_", " ")
+
+    # Build list of exact labels to look for (all common capitalizations)
+    labels = {norm}
+    aliases = {
+        "cc": ["CC", "Classic Constructed"],
+        "classic constructed": ["CC", "Classic Constructed"],
+        "blitz": ["Blitz"],
+        "living legend": ["Living Legend", "LL"],
+        "ll": ["Living Legend", "LL"],
+        "commoner": ["Commoner"],
+        "silver age": ["Silver Age"],
+    }
+    for key, vals in aliases.items():
+        if norm == key:
+            labels.update(vals)
+            labels.add(key)
+
+    # Strategy 1: Find buttons/tabs/links whose trimmed text exactly matches
+    for tag in ["button", "a", '[role="tab"]']:
+        try:
+            elements = page.query_selector_all(tag)
+            for el in elements:
+                try:
+                    text = (el.inner_text() or "").strip()
+                except Exception:
+                    continue
+                if text in labels or text.lower() in {l.lower() for l in labels}:
+                    if el.is_visible():
+                        el.click()
+                        page.wait_for_timeout(2000)
+                        print(f"[deck] Clicked format filter: '{text}'")
+                        return True
+        except Exception:
+            pass
+
+    # Strategy 2: Look for a select/dropdown containing format options
+    try:
+        selects = page.query_selector_all("select")
+        for sel in selects:
+            options = sel.query_selector_all("option")
+            for opt in options:
+                text = (opt.inner_text() or "").strip()
+                if text in labels or text.lower() in {l.lower() for l in labels}:
+                    sel.select_option(label=text)
+                    page.wait_for_timeout(2000)
+                    print(f"[deck] Selected format from dropdown: '{text}'")
+                    return True
+    except Exception:
+        pass
+
+    print(f"[deck] No format filter UI found for '{format_filter}' — will filter client-side")
+    return False
+
+
+def _format_matches(deck_format: str, query: str) -> bool:
+    """Check if a deck's format matches the query (fuzzy)."""
+    if not deck_format:
+        return True  # no format info available — include by default
+    df = deck_format.lower().replace("-", " ").replace("_", " ")
+    # Handle common abbreviations
+    aliases = {
+        "cc": ["classic constructed", "cc"],
+        "blitz": ["blitz"],
+        "living legend": ["living legend", "ll"],
+        "commoner": ["commoner"],
+        "silver age": ["silver age"],
+    }
+    for canonical, names in aliases.items():
+        if query in names or query == canonical:
+            return any(n in df for n in names) or canonical in df
+    return query in df
+
+
+def _extract_deck_links(page) -> list[dict]:
+    """Extract real deck links from the current page, filtering out action buttons."""
+    import re as _re
+
+    links = page.query_selector_all('a[href*="/decks/"]')
+    page_decks = []
+    seen_hrefs: set[str] = set()
+
+    for link in links:
+        href = link.get_attribute("href") or ""
+
+        # Filter out non-deck links:
+        # - "Play on Talishar" → href starts with http (external link)
+        # - "Compare with other decks" → href contains /decks/compare
+        # - Must match /decks/{ULID} pattern (26-char alphanumeric ID)
+        if not href or href.startswith("http") or "compare" in href:
+            continue
+        if not _re.match(r"^/decks/[A-Z0-9]{20,}$", href):
+            continue
+        if href in seen_hrefs:
+            continue
+        seen_hrefs.add(href)
+
+        name = link.inner_text().split("\n")[0].strip()
+        if not name:
+            continue
+
+        # Extract hero and win rate from the parent container.
+        # Hero: from hero image URL (content.fabrary.net/heroes/<slug>.webp)
+        # Win rate: from text like "3,190 / 6,152 (52%)"
+        hero = ""
+        win_rate = 0.0
+        try:
+            info = link.evaluate('''el => {
+                let p = el;
+                for (let i = 0; i < 8; i++) {
+                    p = p.parentElement;
+                    if (!p) break;
+                }
+                let hero = "";
+                let winRate = 0;
+                let format = "";
+                if (p) {
+                    const imgs = p.querySelectorAll("img");
+                    for (const img of imgs) {
+                        const src = img.src || "";
+                        if (src.includes("/heroes/")) {
+                            hero = src.split("/heroes/")[1].replace(".webp", "");
+                            break;
+                        }
+                    }
+                    const text = p.innerText || "";
+                    const m = text.match(/(\\d+)%/);
+                    if (m) winRate = parseInt(m[1]);
+                    // Try to find format info (CC, Blitz, etc.)
+                    const formatPatterns = ["Classic Constructed", "CC", "Blitz", "Living Legend", "Commoner", "Silver Age"];
+                    for (const fp of formatPatterns) {
+                        if (text.includes(fp)) {
+                            format = fp;
+                            break;
+                        }
+                    }
+                    // Also check for format badges/spans
+                    const badges = p.querySelectorAll("span, badge, .badge, .tag, .format, .label");
+                    for (const b of badges) {
+                        const bt = (b.innerText || "").trim();
+                        for (const fp of formatPatterns) {
+                            if (bt === fp || bt.toLowerCase() === fp.toLowerCase()) {
+                                format = fp;
+                                break;
+                            }
+                        }
+                        if (format) break;
+                    }
+                }
+                return {hero: hero, winRate: winRate, format: format};
+            }''')
+            hero = info["hero"].replace("-", " ").title() if info.get("hero") else ""
+            win_rate = float(info.get("winRate", 0))
+            fmt = info.get("format", "")
+        except Exception:
+            pass
+
+        page_decks.append({
+            "name": name,
+            "hero": hero,
+            "href": href,
+            "url": f"https://fabrary.net{href}",
+            "win_rate": win_rate,
+            "format": fmt,
+        })
+
+    return page_decks
 
 
 def _fetch_deck_detail(url: str) -> dict:
@@ -442,6 +621,85 @@ def _print_deck_detail(detail: dict, set_map: dict[str, str]) -> None:
 # Main CLI
 # ---------------------------------------------------------------------------
 
+def _generate_filename(detail: dict, set_map: dict[str, str]) -> str:
+    """Generate a filename from the hero card in a deck detail."""
+    hero_id = _resolve_card_id(
+        detail["hero_arena"][0]["code"],
+        detail["hero_arena"][0]["name"],
+        set_map,
+    )
+    default_name = hero_id or detail["hero_arena"][0]["name"].replace(" ", "_")
+    default_name = default_name.replace(",", "").replace("'", "")
+    return "".join(w.capitalize() for w in default_name.split("_"))
+
+
+def _bulk_download(
+    decks: list[dict], set_map: dict[str, str], assets_dir: Path,
+) -> None:
+    """
+    Download the highest win% deck for each unique hero.
+
+    Groups decks by hero, picks the best one per hero, fetches detail,
+    and saves to Assets/.
+    """
+    # Group by hero, pick best win% per hero
+    best_by_hero: dict[str, dict] = {}
+    for d in decks:
+        hero = d.get("hero", "").strip()
+        if not hero:
+            continue
+        if hero not in best_by_hero or d.get("win_rate", 0) > best_by_hero[hero].get("win_rate", 0):
+            best_by_hero[hero] = d
+
+    if not best_by_hero:
+        print("[ERROR] No decks with hero info found.")
+        return
+
+    # Sort by hero name for readable output
+    heroes = sorted(best_by_hero.keys())
+    print(f"\n[deck] Found {len(heroes)} unique heroes. Downloading best deck for each...\n")
+
+    downloaded = 0
+    skipped = 0
+    errors = 0
+
+    for i, hero in enumerate(heroes, 1):
+        deck = best_by_hero[hero]
+        wr = deck.get("win_rate", 0)
+        fmt = deck.get("format", "")
+        fmt_tag = f" [{fmt}]" if fmt else ""
+        print(f"  [{i}/{len(heroes)}] {hero} — {wr:.0f}%{fmt_tag} — {deck['name']}")
+
+        try:
+            detail = _fetch_deck_detail(deck["url"])
+            if not detail["hero_arena"]:
+                print(f"    SKIP: no hero/equipment found")
+                skipped += 1
+                continue
+
+            content, warnings = _build_deck_file(detail, set_map)
+            for w in warnings:
+                print(f"    [WARN] {w}")
+
+            filename = _generate_filename(detail, set_map)
+            out_path = assets_dir / f"{filename}.txt"
+
+            # Don't overwrite without noting it
+            if out_path.exists():
+                print(f"    Overwriting {out_path.name}")
+
+            out_path.write_text(content)
+            print(f"    Saved: Assets/{filename}.txt")
+            downloaded += 1
+
+        except Exception as exc:
+            print(f"    ERROR: {exc}")
+            errors += 1
+
+    print(f"\n[deck] Bulk download complete: {downloaded} saved, {skipped} skipped, {errors} errors")
+    print(f"[deck] Deck files in: {assets_dir}/")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Browse and download decks from fabrary.net for Talishar AI training."
@@ -455,49 +713,91 @@ def main() -> None:
         "--pages", type=int, default=6,
         help="Number of most-played-decks pages to fetch (default: 6)."
     )
+    parser.add_argument(
+        "--bulk", action="store_true",
+        help="Bulk download: automatically download the highest win%% deck "
+             "for each unique hero. No interactive prompts."
+    )
+    parser.add_argument(
+        "--format", default=None, dest="game_format",
+        help="Filter decks by game format (e.g. 'cc', 'blitz', 'living-legend', "
+             "'silver-age', 'commoner'). Works with both --bulk and interactive mode."
+    )
     args = parser.parse_args()
 
     set_map = _load_set_id_map()
 
     print("[deck] Fetching most-played decks from fabrary.net...")
-    all_decks = _fetch_deck_list(max_pages=args.pages)
+    all_decks = _fetch_deck_list(max_pages=args.pages, format_filter=args.game_format)
 
     if not all_decks:
         print("[ERROR] No decks found.")
         return
 
+    # --- Bulk mode ---
+    if args.bulk:
+        assets_dir = Path(__file__).resolve().parents[2] / "Assets"
+        _bulk_download(all_decks, set_map, assets_dir)
+        return
+
+    # --- Interactive mode ---
     if args.hero is None:
-        print(f"\n  Found {len(all_decks)} decks. Use --hero to filter.\n")
+        all_decks.sort(key=lambda d: d.get("win_rate", 0), reverse=True)
+        print(f"\n  Found {len(all_decks)} decks (sorted by win rate). Use --hero to filter.\n")
         for i, d in enumerate(all_decks):
             hero_tag = f" [{d['hero']}]" if d.get("hero") else ""
-            print(f"  {i+1:3d}. {d['name']}{hero_tag}")
+            fmt_tag = f" ({d['format']})" if d.get("format") else ""
+            wr = d.get("win_rate", 0)
+            print(f"  {i+1:3d}. {wr:2.0f}% | {d['name']}{hero_tag}{fmt_tag}")
         return
 
     hero_query = args.hero.lower()
     print(f"\n[deck] Searching for hero matching '{args.hero}'...")
 
-    for deck in all_decks:
-        # Match against hero name (extracted from image) or deck name
-        hero_name = deck.get("hero", "").lower()
-        deck_name = deck["name"].lower()
-        if hero_query not in hero_name and hero_query not in deck_name:
-            continue
+    # Build filtered list so we can navigate forward and back
+    matches = [
+        d for d in all_decks
+        if hero_query in d.get("hero", "").lower()
+        or hero_query in d["name"].lower()
+    ]
 
+    if not matches:
+        print(f"  No decks matching '{args.hero}'.")
+        return
+
+    matches.sort(key=lambda d: d.get("win_rate", 0), reverse=True)
+    print(f"  Found {len(matches)} matching deck(s) (sorted by win rate).\n")
+
+    idx = 0
+    while 0 <= idx < len(matches):
+        deck = matches[idx]
+
+        wr = deck.get("win_rate", 0)
+        fmt = deck.get("format", "")
         print(f"\n{'='*60}")
-        print(f"  Deck: {deck['name']}")
+        print(f"  [{idx+1}/{len(matches)}] Deck: {deck['name']}")
         if deck.get("hero"):
             print(f"  Hero: {deck['hero']}")
+        print(f"  Win rate: {wr:.0f}%")
+        if fmt:
+            print(f"  Format: {fmt}")
         print(f"  URL:  {deck['url']}")
         print(f"{'='*60}")
 
         while True:
-            choice = input("\n  [i]nspect / [d]ownload / [s]kip / [q]uit? ").strip().lower()
+            prev_hint = " / [p]rev" if idx > 0 else ""
+            choice = input(f"\n  [i]nspect / [d]ownload / [s]kip{prev_hint} / [q]uit? ").strip().lower()
 
             if choice == "q":
                 print("Bye!")
                 return
 
             if choice == "s":
+                idx += 1
+                break
+
+            if choice == "p" and idx > 0:
+                idx -= 1
                 break
 
             if choice in ("i", "d"):
@@ -517,19 +817,7 @@ def main() -> None:
                 for w in warnings:
                     print(f"  [WARN] {w}")
 
-                # Generate filename from hero card name
-                hero_id = _resolve_card_id(
-                    detail["hero_arena"][0]["code"],
-                    detail["hero_arena"][0]["name"],
-                    set_map,
-                )
-                default_name = hero_id or detail["hero_arena"][0]["name"].replace(" ", "_")
-                # Clean up for filename: capitalize words
-                default_name = default_name.replace(",", "").replace("'", "")
-                suggested = "".join(
-                    w.capitalize() for w in default_name.split("_")
-                )
-
+                suggested = _generate_filename(detail, set_map)
                 name = input(f"  Save as Assets/[{suggested}].txt: ").strip()
                 if not name:
                     name = suggested
@@ -539,6 +827,7 @@ def main() -> None:
                 out_path.write_text(content)
                 print(f"  Saved to {out_path}")
                 print(f"  Use with: --p1-deck {name} or --p2-deck {name}")
+                idx += 1
                 break
 
     print("\n[deck] Done — no more matching decks.")

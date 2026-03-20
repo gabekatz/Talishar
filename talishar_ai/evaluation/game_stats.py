@@ -14,6 +14,8 @@ deck_remaining_p1  cards left in P1's deck at game end
 deck_remaining_p2  cards left in P2's deck at game end
 deck_out         True if either player ran out of cards
 truncated        True if the episode hit max_steps (not a real terminal)
+equip_lost_p1    equipment pieces P1 lost during the game
+equip_lost_p2    equipment pieces P2 lost during the game
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ class GameStats:
     deck_remaining_p2: int    # P2 deck size at game end
     deck_out:          bool   # True if either deck hit 0
     truncated:         bool   # True if game was cut short by max_steps
+    equip_lost_p1:     int = 0   # equipment pieces P1 lost
+    equip_lost_p2:     int = 0   # equipment pieces P2 lost
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -46,19 +50,23 @@ class GameStatsCollector:
     """
 
     def __init__(self) -> None:
-        self._start_my_hp:  int  = 20
-        self._start_opp_hp: int  = 20
-        self._steps:        int  = 0
-        self._last_state:   dict = {}
+        self._start_my_hp:    int  = 20
+        self._start_opp_hp:   int  = 20
+        self._start_my_equip: int  = 0
+        self._start_opp_equip: int = 0
+        self._steps:          int  = 0
+        self._last_state:     dict = {}
 
     def reset(self, start_state: dict) -> None:
-        """Record starting health values and zero step counter."""
+        """Record starting health and equipment values and zero step counter."""
         my  = start_state.get("myState",    {})
         opp = start_state.get("theirState", {})
-        self._start_my_hp  = int(my.get("health",  20) or 20)
-        self._start_opp_hp = int(opp.get("health", 20) or 20)
-        self._steps        = 0
-        self._last_state   = start_state
+        self._start_my_hp    = int(my.get("health",  20) or 20)
+        self._start_opp_hp   = int(opp.get("health", 20) or 20)
+        self._start_my_equip = len(my.get("equipment", []))
+        self._start_opp_equip = len(opp.get("equipment", []))
+        self._steps          = 0
+        self._last_state     = start_state
 
     def step(self, state: dict) -> None:
         """Call after every env.step() to update running state."""
@@ -83,6 +91,8 @@ class GameStatsCollector:
         final_opp_hp = int(opp.get("health",   0) or 0)
         p1_deck      = int(my.get("deckCount",  0) or 0)
         p2_deck      = int(opp.get("deckCount", 0) or 0)
+        p1_equip     = len(my.get("equipment", []))
+        p2_equip     = len(opp.get("equipment", []))
 
         return GameStats(
             result            = result,
@@ -93,4 +103,6 @@ class GameStatsCollector:
             deck_remaining_p2 = p2_deck,
             deck_out          = (p1_deck == 0 or p2_deck == 0),
             truncated         = truncated,
+            equip_lost_p1     = max(0, self._start_my_equip  - p1_equip),
+            equip_lost_p2     = max(0, self._start_opp_equip - p2_equip),
         )

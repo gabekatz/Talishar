@@ -42,13 +42,61 @@ header('Content-Type: application/json; charset=utf-8');
 
 ob_start();
 
+/**
+ * Fill a deck's main deck line from its inventory to reach the target size.
+ *
+ * Randomly selects cards from the inventory (lines 3+) and appends them to
+ * the main deck (line 2) until it reaches $targetSize cards.  The selected
+ * cards are removed from inventory.  This creates per-game deck variety
+ * when used in training.
+ *
+ * @param string $deckFile   Path to the source deck .txt file
+ * @param int    $targetSize Target main deck size (default 60 for CC)
+ * @return string            Modified deck file content
+ */
+function fillDeckFromInventory(string $deckFile, int $targetSize = 60): string {
+    $lines = file($deckFile, FILE_IGNORE_NEW_LINES);
+    $heroLine  = $lines[0] ?? '';
+    $deckCards = array_values(array_filter(explode(' ', trim($lines[1] ?? ''))));
+
+    // Collect inventory cards (skip blank separator on line 3)
+    $inventory = [];
+    for ($i = 2; $i < count($lines); $i++) {
+        $card = trim($lines[$i]);
+        if ($card !== '') $inventory[] = $card;
+    }
+
+    // Fill main deck from inventory
+    $needed = $targetSize - count($deckCards);
+    if ($needed > 0 && count($inventory) > 0) {
+        shuffle($inventory);
+        $fill      = array_slice($inventory, 0, min($needed, count($inventory)));
+        $deckCards  = array_merge($deckCards, $fill);
+        $inventory  = array_slice($inventory, min($needed, count($inventory)));
+    }
+
+    // Shuffle the main deck so filled cards aren't always at the end
+    shuffle($deckCards);
+
+    // Rebuild deck file
+    $result  = $heroLine . "\n";
+    $result .= implode(' ', $deckCards) . "\n";
+    $result .= "\n";
+    foreach ($inventory as $card) {
+        $result .= $card . "\n";
+    }
+    return $result;
+}
+
 $_POST = json_decode(file_get_contents('php://input'), true) ?? [];
 
-$p1DeckName = preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['p1_deck'] ?? 'Ira');
-$p2DeckName = preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['p2_deck'] ?? 'Ira');
-$p2IsAI     = ($_POST['p2_is_ai'] ?? true)  ? '1' : '0';
-$p1IsAI     = ($_POST['p1_is_ai'] ?? false) ? '1' : '0';
-$format     = preg_replace('/[^a-z0-9]/', '', strtolower($_POST['format'] ?? 'cc'));
+$p1DeckName        = preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['p1_deck'] ?? 'Ira');
+$p2DeckName        = preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['p2_deck'] ?? 'Ira');
+$p2IsAI            = ($_POST['p2_is_ai'] ?? true)  ? '1' : '0';
+$p1IsAI            = ($_POST['p1_is_ai'] ?? false) ? '1' : '0';
+$format            = preg_replace('/[^a-z0-9]/', '', strtolower($_POST['format'] ?? 'cc'));
+$fillFromInventory = !empty($_POST['fill_from_inventory']);
+$targetDeckSize    = intval($_POST['target_deck_size'] ?? 60);
 
 $p1DeckFile = "../Assets/{$p1DeckName}.txt";
 $p2DeckFile = "../Assets/{$p2DeckName}.txt";
@@ -74,10 +122,15 @@ if (!mkdir("../Games/$gameName", 0700, true)) {
     exit;
 }
 
-// ---- Copy deck files -------------------------------------------------------
+// ---- Copy deck files (optionally filling main deck from inventory) ---------
 
-copy($p1DeckFile, "../Games/$gameName/p1Deck.txt");
-copy($p2DeckFile, "../Games/$gameName/p2Deck.txt");
+if ($fillFromInventory) {
+    file_put_contents("../Games/$gameName/p1Deck.txt", fillDeckFromInventory($p1DeckFile, $targetDeckSize));
+    file_put_contents("../Games/$gameName/p2Deck.txt", fillDeckFromInventory($p2DeckFile, $targetDeckSize));
+} else {
+    copy($p1DeckFile, "../Games/$gameName/p1Deck.txt");
+    copy($p2DeckFile, "../Games/$gameName/p2Deck.txt");
+}
 
 // ---- Generate auth keys and lobby metadata --------------------------------
 

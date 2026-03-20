@@ -21,15 +21,23 @@ Info dict keys:
 
 from __future__ import annotations
 
+import json
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+import random
+
 from .features import StateEncoder, OBS_DIM, MAX_ACTIONS
 from .game_manager import GameManager
 from .evaluation.game_stats import GameStatsCollector
+
+_METADATA_PATH = Path(__file__).parent / "card_metadata.json"
+_DEFAULT_EQUIP_UTILITY = 5  # mid-range default when metadata is unavailable
 
 
 class TalisharEnv(gym.Env):
@@ -61,7 +69,10 @@ class TalisharEnv(gym.Env):
         p2_is_ai: bool = True,
         player_id: int = 1,
         shaped_reward_scale: float = 0.01,
+        equip_penalty_scale: float = 0.005,
         max_steps: int = 2000,
+        deck_pool: list[str] | None = None,
+        fill_from_inventory: bool = False,
     ) -> None:
         super().__init__()
         self.gm                  = game_manager
@@ -70,7 +81,10 @@ class TalisharEnv(gym.Env):
         self.p2_is_ai            = p2_is_ai
         self.player_id           = player_id
         self.shaped_reward_scale = shaped_reward_scale
+        self.equip_penalty_scale = equip_penalty_scale
         self.max_steps           = max_steps
+        self.deck_pool           = deck_pool
+        self.fill_from_inventory = fill_from_inventory
 
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
@@ -80,14 +94,30 @@ class TalisharEnv(gym.Env):
         self._encoder    = StateEncoder()
         self._stats      = GameStatsCollector()
 
+        # Card metadata for utility-weighted equipment penalties
+        self._card_metadata: dict[str, dict] = {}
+        if _METADATA_PATH.exists():
+            try:
+                self._card_metadata = json.loads(_METADATA_PATH.read_text())
+            except Exception:
+                pass
+
         # Episode state (set in reset)
         self._game_name: str  = ""
         self._auth_key:  str  = ""
         self._p2_key:    str  = ""
         self._prev_my_health:   int = 20
         self._prev_opp_health:  int = 20
+        self._prev_my_equip_ids:  list[str] = []
+        self._prev_opp_equip_ids: list[str] = []
         self._last_state: dict[str, Any] = {}
         self._step_count: int = 0
+
+        # Pitch stack tracking: records the pitch values (1=red, 2=yellow, 3=blue)
+        # of cards as they are placed on the deck bottom during PDECK.  This lets
+        # the model learn to interleave colors for balanced second-cycle hands.
+        self._pitch_history: list[int] = []
+        self._starting_deck_size: int = 60
 
     # ------------------------------------------------------------------
     # Core Gym API
@@ -98,10 +128,18 @@ class TalisharEnv(gym.Env):
     ) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
 
+        # Pick random decks from pool if configured
+        p1 = self.p1_deck
+        p2 = self.p2_deck
+        if self.deck_pool:
+            p1 = random.choice(self.deck_pool)
+            p2 = random.choice(self.deck_pool)
+
         name, p1k, p2k = self.gm.create_game(
-            p1_deck=self.p1_deck,
-            p2_deck=self.p2_deck,
+            p1_deck=p1,
+            p2_deck=p2,
             p2_is_ai=self.p2_is_ai,
+            fill_from_inventory=self.fill_from_inventory,
         )
         self._game_name = name
         self._auth_key  = p1k if self.player_id == 1 else p2k
@@ -113,7 +151,13 @@ class TalisharEnv(gym.Env):
         self._last_state = state
         self._prev_my_health  = state.get("myState",    {}).get("health", 20)
         self._prev_opp_health = state.get("theirState", {}).get("health", 20)
+        self._prev_my_equip_ids  = self._extract_equip_ids(state, "myState")
+        self._prev_opp_equip_ids = self._extract_equip_ids(state, "theirState")
         self._step_count = 0
+        self._pitch_history = []
+        self._starting_deck_size = int(
+            state.get("myState", {}).get("deckCount", 60) or 60
+        )
         self._stats.reset(state)
 
         obs  = self._encoder.encode(state)
@@ -133,6 +177,17 @@ class TalisharEnv(gym.Env):
 
         move   = legal[action]
         params = move["params"]
+
+        # Track pitch stacking: when the AI places a card on deck bottom
+        # during PDECK phase, record its pitch value for second-cycle planning.
+        if move.get("type") == "PITCH_TO_DECK" or move.get("mode") == 6:
+            card_id = move.get("cardID", "")
+            pitch_val = int((move.get("stats") or {}).get("pitch", 0) or 0)
+            if pitch_val == 0 and card_id:
+                # Fallback: look up pitch from metadata
+                meta = self._card_metadata.get(card_id, {})
+                pitch_val = int(meta.get("pitch", 0) or 0)
+            self._pitch_history.append(pitch_val)
 
         next_state = self.gm.submit_action(
             self._game_name, self.player_id, self._auth_key, params
@@ -165,9 +220,17 @@ class TalisharEnv(gym.Env):
         truncated  = (not terminated) and (self._step_count >= self.max_steps)
         reward     = self._compute_reward(next_state, terminated)
 
-        # Update prev health for next step
+        # Update prev health and equipment for next step
         self._prev_my_health  = next_state.get("myState",    {}).get("health", 0)
         self._prev_opp_health = next_state.get("theirState", {}).get("health", 0)
+        self._prev_my_equip_ids  = self._extract_equip_ids(next_state, "myState")
+        self._prev_opp_equip_ids = self._extract_equip_ids(next_state, "theirState")
+
+        # Inject pitch stack state so the encoder can build features from it
+        next_state["_pitch_stack"] = {
+            "history": self._pitch_history,
+            "starting_deck_size": self._starting_deck_size,
+        }
 
         obs    = self._encoder.encode(next_state)
         result = self._result(next_state) if (terminated or truncated) else None
@@ -205,6 +268,39 @@ class TalisharEnv(gym.Env):
         delta_opp = int(self._prev_opp_health) - int(opp_hp)   # positive = we dealt damage
         delta_my  = int(self._prev_my_health)  - int(my_hp)    # positive = we took damage
         shaped    = self.shaped_reward_scale * (delta_opp - delta_my)
+
+        # Equipment preservation: penalise losing equipment, reward destroying
+        # opponent's.  Penalty is weighted by each card's strategic utility
+        # from card_metadata.json (LLM-scored 0-10).  High-utility equipment
+        # like Mask of Momentum (10) gets 2× the penalty of average gear (5).
+        #
+        # Turn 0 gets an extra-strong penalty because both players redraw to
+        # intellect at end of turn — hand cards used to block are "free" but
+        # equipment is permanent.
+        if self.equip_penalty_scale > 0:
+            curr_my_ids  = self._extract_equip_ids(state, "myState")
+            curr_opp_ids = self._extract_equip_ids(state, "theirState")
+
+            # Diff equipment lists to find which specific cards were lost
+            my_lost_ids  = list((Counter(self._prev_my_equip_ids)  - Counter(curr_my_ids)).elements())
+            opp_lost_ids = list((Counter(self._prev_opp_equip_ids) - Counter(curr_opp_ids)).elements())
+
+            # Sum utility-weighted losses (default 5 → weight 1.0)
+            my_lost_utility  = sum(self._equip_utility(cid) for cid in my_lost_ids)
+            opp_lost_utility = sum(self._equip_utility(cid) for cid in opp_lost_ids)
+
+            turn_no = int(state.get("turnNumber", 0) or 0)
+
+            # Early-game multiplier: 3x penalty on turn 0, 2x on turn 1,
+            # fading to 1x by turn 10+.
+            if turn_no == 0:
+                early_mult = 3.0
+            else:
+                early_mult = max(1.0, 2.0 - turn_no / 10.0)
+
+            equip_signal = self.equip_penalty_scale * (opp_lost_utility - my_lost_utility * early_mult)
+            shaped += equip_signal
+
         return float(np.clip(shaped, -1.0, 1.0))
 
     def _terminal_reward(self, state: dict) -> float:
@@ -232,6 +328,20 @@ class TalisharEnv(gym.Env):
         my_hp  = state.get("myState",    {}).get("health", 1)
         opp_hp = state.get("theirState", {}).get("health", 1)
         return phase == "OVER" or int(my_hp) <= 0 or int(opp_hp) <= 0
+
+    @staticmethod
+    def _extract_equip_ids(state: dict, player_key: str) -> list[str]:
+        """Extract list of card IDs from a player's equipment zone."""
+        return [
+            c.get("cardID", "") for c in
+            state.get(player_key, {}).get("equipment", [])
+        ]
+
+    def _equip_utility(self, card_id: str) -> float:
+        """Return equipment utility weight: 5→1.0 (average), 10→2.0, 0→0.0."""
+        meta = self._card_metadata.get(card_id, {})
+        util = int(meta.get("equipment_utility", _DEFAULT_EQUIP_UTILITY))
+        return util / 5.0
 
     def _make_info(
         self, state: dict, result: str | None, truncated: bool = False

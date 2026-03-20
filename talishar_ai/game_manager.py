@@ -54,27 +54,39 @@ class GameManager:
         p2_is_ai: bool = True,
         p1_is_ai: bool = False,
         format: str = "cc",
+        fill_from_inventory: bool = False,
+        target_deck_size: int = 60,
     ) -> tuple[str, str, str]:
         """
         Create a new training game.
+
+        Parameters
+        ----------
+        fill_from_inventory:
+            When True, the PHP backend randomly fills the main deck from the
+            inventory section of the deck file until it reaches target_deck_size.
+            Creates per-game deck variety during training.
+        target_deck_size:
+            Target main deck size when fill_from_inventory is True (default 60).
 
         Returns
         -------
         (game_name, p1_auth_key, p2_auth_key)
         """
         last_err: Exception | None = None
+        body: dict = {
+            "p1_deck": p1_deck,
+            "p2_deck": p2_deck,
+            "p2_is_ai": p2_is_ai,
+            "p1_is_ai": p1_is_ai,
+            "format": format,
+        }
+        if fill_from_inventory:
+            body["fill_from_inventory"] = True
+            body["target_deck_size"] = target_deck_size
         for attempt in range(self._max_retries):
             try:
-                resp = self._post(
-                    "/game/APIs/CreateTrainingGame.php",
-                    {
-                        "p1_deck": p1_deck,
-                        "p2_deck": p2_deck,
-                        "p2_is_ai": p2_is_ai,
-                        "p1_is_ai": p1_is_ai,
-                        "format": format,
-                    },
-                )
+                resp = self._post("/game/APIs/CreateTrainingGame.php", body)
                 if "error" in resp:
                     raise RuntimeError(f"CreateTrainingGame failed: {resp['error']}")
                 return resp["gameName"], resp["p1AuthKey"], resp["p2AuthKey"]

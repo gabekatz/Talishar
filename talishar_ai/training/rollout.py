@@ -82,6 +82,19 @@ class RolloutBuffer:
     def is_full(self) -> bool:
         return self._ptr >= self.capacity
 
+    def pad_remaining(self) -> None:
+        """Fill unfilled slots with zero-reward done transitions.
+
+        Used when a worker hits an unrecoverable error mid-rollout so the
+        buffer can still be presented to the barrier / PPO update without
+        deadlocking.  The padded transitions are effectively no-ops (zero
+        reward, done=True) and won't meaningfully affect the update.
+        """
+        while self._ptr < self.capacity:
+            self.dones[self._ptr] = 1.0
+            self.episode_starts[self._ptr] = True
+            self._ptr += 1
+
     # ------------------------------------------------------------------
     # Post-collection
     # ------------------------------------------------------------------

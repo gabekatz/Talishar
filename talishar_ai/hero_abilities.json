@@ -1,0 +1,99 @@
+{
+  "_comment": "Hero ability descriptions for hero-conditioned card metadata. Add heroes as needed for training. Class/talent are auto-detected from card data; only 'ability' and optionally 'intellect'/'life' need manual entry.",
+
+  "ira_crimson_haze": {
+    "ability": "Once per Turn Action - 0: Attack with Ira. (When you attack with a weapon, your attack action cards gain go again this turn. Ira has 0 power.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "ira_scarlet_revenger": {
+    "ability": "Once per Turn Action - 0: Attack with Ira. If Ira has hit this turn, she gains +2 power for this attack. (When you attack with a weapon, your attack action cards gain go again this turn.)",
+    "intellect": 4,
+    "life": 18
+  },
+  "katsu": {
+    "ability": "Once per Turn Instant - 0: If a Combo card you control hits, search your deck for a card with Combo, reveal it, and put it into your hand. Shuffle your deck.",
+    "intellect": 4,
+    "life": 20
+  },
+  "benji_the_piercing_wind": {
+    "ability": "When you play your second action card each turn, draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "bravo": {
+    "ability": "Guardian hero. When you defend with a card from hand that has defense 3 or greater, you may draw a card at the end of the chain link.",
+    "intellect": 4,
+    "life": 40
+  },
+  "dorinthea": {
+    "ability": "Once per Turn Effect - When your weapon attack hits a hero, your next weapon attack this turn gains +1 power.",
+    "intellect": 4,
+    "life": 20
+  },
+  "rhinar": {
+    "ability": "Once per Turn Action - 0: Discard a random card. If a card with 6 or more power is discarded this way, draw a card, then your attacks gain intimidate this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dash": {
+    "ability": "Once per Turn Instant - 0: If you have boosted this turn, you may banish a Mechanologist item from your hand with cost 2 or less. If you do, put it into the arena.",
+    "intellect": 4,
+    "life": 20
+  },
+  "viserai": {
+    "ability": "Whenever you play a Runeblade non-attack action card, create a Runechant token.",
+    "intellect": 4,
+    "life": 20
+  },
+  "vynnset": {
+    "ability": "Once per Turn Action - Destroy any number of Runechant tokens you control: Deal that much arcane damage to target hero, then you lose that much life.",
+    "intellect": 4,
+    "life": 20
+  },
+  "chane": {
+    "ability": "Once per Turn Instant - 0: You may play a card with blood debt from your banished zone. At the beginning of your end phase, you lose 1 life for each card with blood debt in your banished zone.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kano": {
+    "ability": "Instant - 0: Look at the top card of your deck. You may play it as though it were an instant. If it has Wizard in its name, it gains +1 arcane damage.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dromai": {
+    "ability": "Once per Turn Action - 0: Create an Ash token. Go again.",
+    "intellect": 4,
+    "life": 20
+  },
+  "fai": {
+    "ability": "Whenever a Draconic chain link resolves, deal 1 arcane damage to each opposing hero.",
+    "intellect": 4,
+    "life": 20
+  },
+  "lexi": {
+    "ability": "Once per Turn Instant - 0: You may put an arrow from your arsenal face up into the bow zone. If you do, your next arrow attack this turn gains dominate.",
+    "intellect": 4,
+    "life": 20
+  },
+  "prism": {
+    "ability": "Once per Turn Instant - 0: Create a Spectral Shield token. (If your hero would be dealt damage, you may instead destroy a Spectral Shield you control.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "azalea": {
+    "ability": "Once per Turn Action - 0: Put an arrow from your hand face up into the bow zone. If you do, it gains dominate.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kassai": {
+    "ability": "When you attack with a weapon, if this is the second or later weapon attack this turn, create a Copper token. (Copper is an item with 'Action - Destroy this: Gain 1 resource.')",
+    "intellect": 4,
+    "life": 20
+  },
+  "oldhim": {
+    "ability": "Essence of Earth and Ice - At the start of your turn, you may pitch an Earth or Ice card from your hand. If you pitch an Earth card, gain 1 life. If you pitch an Ice card, the next attack action card you play this turn gains +1 power.",
+    "intellect": 4,
+    "life": 40
+  }
+}

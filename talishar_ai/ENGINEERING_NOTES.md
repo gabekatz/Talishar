@@ -785,16 +785,261 @@ uv run python -m scripts.download_deck --hero "Dorinthea"
 
 ---
 
-## 19. File map
+## 19. Card Metadata Pipeline (scripts/generate_card_metadata.py)
+
+### The problem: the model can't read card text
+
+The observation vector encodes raw stats (cost, power, defense, pitch) but knows
+nothing about what a card *does*.  Two cards with identical stats but completely
+different abilities — one creates 3 Runechants, the other gains 3 life — look
+the same to the model.  The model has to discover every card's strategic value
+purely through gameplay experience, which is extremely sample-inefficient.
+
+### Solution: a three-stage metadata pipeline
+
+`generate_card_metadata.py` builds `card_metadata.json` with structured strategic
+information for every card, computed *before* training starts.
+
+#### Stage 1: PHP Parsing (always runs, no API key needed)
+
+Parses `GeneratedCardDictionaries.php` to extract:
+- **Stats**: name, type, subtype, class, talent, cost, power, defense, pitch
+- **40+ keywords**: goAgain, dominate, overpower, intimidate, phantasm, crush,
+  piercing, bloodDebt, battleworn, temper, bladebreak, guardwell, boost, charge,
+  arcaneBarrier, spellvoid, ward, combo, reprise, ambush, channel, surge, etc.
+- **Amount keywords**: arcaneBarrierAmount, spellvoidAmount, quellAmount, etc.
+
+**Parser details**: uses two-pass regex matching — `_MATCH_QUOTED_RE` handles
+values with commas (e.g., "Ira, Crimson Haze"), `_MATCH_UNQUOTED_RE` handles
+numeric values.  Boolean keywords use `_parse_bool_match_block()` which looks
+for `=> true` patterns.  The PHP function `GeneratedCardType` defaults to `"AA"`
+for cards not explicitly listed — the parser mirrors this with
+`types.get(cid, "AA")`.
+
+**Output**: 4,645 cards with stats and keyword flags.
+
+#### Stage 2: Deterministic Valuation (always runs)
+
+Applies the **FaB rate system** where 3 = on-rate (a card that attacks for 3,
+defends for 3, or pitches for 3 is baseline).  Computed fields:
+
+| Field | Formula |
+|---|---|
+| `attack_value` | power + keyword adjustments (dominate +1, overpower +1, intimidate +1, phantasm −1, crush +1, piercing +1, bloodDebt −1) − cost/3 |
+| `block_value` | defense (direct) |
+| `pitch_value` | pitch (direct) |
+| `best_use_value` | max(attack_value, block_value, pitch_value) |
+| `rate_delta` | best_use_value − 3 (positive = above rate) |
+| `block_willingness` | Equipment only: guardwell=9, battleworn=5, temper=4, bladebreak=2, no keyword=7. Adjusted by defense. |
+| `arsenal_value` | 0-10, how useful this card is in arsenal. Resources/gems=0 (can only pitch/block from hand), AA scaled by attack_value, A=4-10 based on cost, I=3-10, AR=2-8, DR=1-6, equipment/weapons=0 (own zones). |
+
+**Why arsenal_value?** In FaB, you can only pitch and block from hand, not from
+arsenal.  A resource card stuck in arsenal is dead weight — it can't pitch, can't
+block, and has no play effect.  This feature teaches the model to never arsenal
+cards that can't be played out of it.
+
+#### Stage 3: LLM Enrichment (optional, requires `--enrich` + API key)
+
+Uses Claude API to score properties that can't be derived from stats or keywords.
+Each card type gets a tailored prompt:
+
+| Card type | LLM fields |
+|---|---|
+| Equipment (E) | `equipment_utility` 0-10 (activated abilities value) |
+| Weapons (W) | `equipment_utility` 0-10 |
+| Attack actions (AA) | `on_hit_value` 0-5, `has_on_hit`, `conditional_cost`, `token_generation` 0-3 |
+| Non-attack actions (A) | `conditional_cost`, `token_generation` 0-3, `pump_value` 0-5, `disruption_value` 0-5, `effect_value` 0-10 |
+| Reactions (AR, DR) | `conditional_cost`, `token_generation` 0-3, `pump_value` 0-5 |
+| Instants (I) | `conditional_cost`, `token_generation` 0-3, `disruption_value` 0-5, `effect_value` 0-10 |
+
+**`effect_value`** is critical for non-attack actions whose value comes from
+effects, not stats.  Deadwood Dirge Red (power=0, defense=2, pitch=0) looks
+below-rate deterministically (`best_use_value=2`), but creating 3 Runechants
+is actually on-rate (`effect_value=3`).  When the LLM returns an `effect_value`
+higher than the deterministic `best_use_value`, the metadata is updated.
+
+#### Stage 4: Hero-Conditioned Synergy (optional, `--heroes`)
+
+Scores how each hero's specific ability changes a card's value.  See §21 below.
+
+### Usage
+
+```bash
+# Stage 1+2 only (no API key needed)
+python3 -m talishar_ai.scripts.generate_card_metadata
+
+# Full pipeline: Stage 1+2+3
+python3 -m talishar_ai.scripts.generate_card_metadata --enrich
+
+# Full pipeline + hero synergy for all heroes
+python3 -m talishar_ai.scripts.generate_card_metadata --enrich --heroes all
+
+# Auto-generate hero ability descriptions (one-time setup)
+python3 -m talishar_ai.scripts.generate_card_metadata --generate-hero-abilities
+```
+
+---
+
+## 20. Observation Space Expansion (features.py)
+
+### Card feature vector: 14 → 18 floats
+
+The original 14-float card vector encoded only raw stats and type.  It now
+includes strategic metadata from `card_metadata.json`:
+
+```
+[0]  cost/10        [1]  power/10       [2]  defense/10     [3]  pitch/3
+[4–11] type one-hot (AA, I, A, E, DR, R, T, C)
+[12] counters/5     [13] tapped
+[14] equipment_utility/10    — how valuable to preserve (LLM-scored)
+[15] block_willingness/10    — should we block with this? (deterministic)
+[16] arsenal_value/10        — is this worth arsenaling? (deterministic)
+[17] hero_synergy/10         — hero-specific card value (LLM-scored)
+```
+
+### New aggregated features
+
+Beyond the per-card vector expansion, several new observation blocks were added:
+
+**Combat chain on-hit awareness (CC_DIM: 5 → 8)**:
+- `active_on_hits`: whether the attacking card has an active on-hit trigger
+- `on_hit_value/5`: how valuable the on-hit effect is (0-5 from metadata)
+- `effective_attack_value/20`: raw damage + on-hit value (true cost of letting
+  the attack through)
+
+**Hand attack planning (HAND_PLAN_DIM = 7)**:
+A greedy algorithm computes the optimal attack sequence from the current hand,
+considering go-again chaining, pitch costs, and external go-again sources
+(agility tokens in auras).  Gives the model a "hand report":
+- `best_attack_line`: max damage from optimal attack sequence
+- `attack_actions`: count of AA cards in hand
+- `go_again_sources`: go-again from hand cards + aura tokens
+- `surplus_cards`: cards left over after best attack plan (free to block)
+- `surplus_block_value`: total defense of surplus cards
+- `attack_reactions`: instant/reaction pumps in hand
+- `can_multi_attack`: 1 if can play 2+ attacks
+
+**Equipment & tempo (EQUIP_TEMPO_DIM = 7)**:
+- `turn_number/30`: game progression
+- Equipment counts (mine and opponent's)
+- Equipment defense total
+- `is_first_turn`: turn 0 flag (both players redraw to intellect)
+- `is_defending`: in defense phase
+- `hand_is_free`: turn 0 AND defending (hand cards are "free" to block with)
+
+**On-hit prevention**: `can_prevent_on_hit` — 1 if total hand defense can fully
+block the incoming attack when there's an active on-hit trigger.
+
+### Total observation dimension: 535
+
+```
+27 card slots × 18 features    = 486 (zone cards)
+7 global + 8 phase + 8 combat  =  23
+1 stack + 4 opponent            =   5
+7 hand_agg + 7 hand_plan        =  14
+7 equip_tempo                   =   7
+                                 ───
+                          Total = 535
+```
+
+---
+
+## 21. Hero-Conditioned Card Metadata
+
+### The problem: card value depends on who's playing
+
+Deadwood Dirge creates 3 Runechants — good for any Runeblade, but *exceptional*
+for Vynnset whose hero ability converts Runechants into direct arcane damage.
+Ash-generating cards are worthless outside Dromai.  Combo cards only matter for
+Katsu.  A universal card valuation misses these synergies.
+
+### Solution: hero_synergy scores
+
+For each hero, the LLM evaluates every compatible card and assigns a
+`hero_synergy` score (0-10) measuring how much the hero's specific ability
+enhances that card compared to a generic hero of the same class.
+
+**Class/talent filtering**: only cards playable by the hero are evaluated.
+A card is compatible if its class matches any of the hero's classes (handling
+multi-class heroes like Marlynn = PIRATE,RANGER) AND its talent matches or is
+empty.  This prevents wasting API calls evaluating Pirate Ranger cards for Lexi.
+
+**Deduplication**: heroes with identical `(ability_text, class, talent)` tuples
+are evaluated only once.  Young/adult variants of the same hero that share an
+ability get shared scores.  Different abilities (e.g., Ira Crimson Haze vs Ira
+Scarlet Revenger) are evaluated separately.  The dedup key is the ability text
+itself, not the hero name — this correctly handles cases like Arakni variants
+that share a name but have completely different abilities.
+
+**Hero abilities file**: `hero_abilities.json` maps hero card IDs to their
+ability descriptions, intellect, and life.  Can be auto-populated with
+`--generate-hero-abilities` (uses Claude to write ability text for all hero
+cards not yet in the file).
+
+**Observation encoding**: the encoder auto-detects the active hero from the
+character zone in the game state (`myState.character[0].cardID`), then looks up
+`hero_scores[hero_id].hero_synergy` for each card.  This flows into card feature
+slot [17] (`hero_synergy/10`).
+
+### Storage format
+
+```json
+"mask_of_momentum": {
+  "name": "Mask of Momentum",
+  "type": "E",
+  "equipment_utility": 10,
+  "hero_scores": {
+    "ira_crimson_haze": {"hero_synergy": 10},
+    "katsu": {"hero_synergy": 9},
+    "fai": {"hero_synergy": 7}
+  }
+}
+```
+
+---
+
+## 22. Equipment Preservation Reward Shaping (env.py)
+
+### The problem
+
+Early training showed the model was breaking equipment to block on turn 0 —
+even premium equipment like Mask of Momentum.  This is a strategic mistake:
+on turn 0 both players draw back to intellect (hand size), so hand cards used
+to block are "free" (they'll be replaced), but equipment is permanent.
+
+### Solution: utility-weighted equipment loss penalties
+
+The reward function now tracks equipment changes between steps using card ID
+diffing (via `collections.Counter` subtraction).  When equipment is lost, the
+penalty is weighted by the card's `equipment_utility` from metadata:
+
+```python
+my_lost_ids = list((Counter(prev_my_equip_ids) - Counter(curr_my_ids)).elements())
+my_lost_utility = sum(self._equip_utility(cid) for cid in my_lost_ids)
+```
+
+The utility weight normalises so that default-utility equipment (5) has weight
+1.0, while premium equipment (utility 10, e.g., Mask of Momentum) has weight
+2.0.  An early-game multiplier increases the penalty on turn 0 (3×) and turn 1
+(2×), fading to 1× by turn 10.
+
+Destroying the *opponent's* equipment is rewarded symmetrically, creating a
+signal for aggressive equipment destruction strategies.
+
+---
+
+## 23. File map
 
 ```
 talishar_ai/
   pyproject.toml              Python package + deps
   card_vocab.json             card_id → integer index (built once, checked in)
+  card_metadata.json          Strategic card metadata (generated, 4,645 cards)
+  hero_abilities.json         Hero ability descriptions for synergy scoring
 
   game_manager.py             HTTP client for the PHP engine
-  features.py                 StateEncoder: JSON → float obs + card_ids
-  env.py                      TalisharEnv (Gymnasium) + GameStatsCollector
+  features.py                 StateEncoder: JSON → float obs + card_ids (OBS_DIM=535)
+  env.py                      TalisharEnv (Gymnasium) + equipment reward shaping
   parallel_env.py             ParallelEnvManager (ThreadPoolExecutor)
 
   card_vocab.py               CardVocab: parse PHP dicts → int lookup
@@ -815,16 +1060,17 @@ talishar_ai/
     evaluate.py               CLI: evaluate checkpoint vs EncounterAI
     head_to_head.py           CLI: checkpoint vs checkpoint Elo match
     download_deck.py          CLI: browse/download competitive decks from fabrary.net
+    generate_card_metadata.py CLI: 4-stage metadata pipeline (parse → rate → LLM → heroes)
 
 PHP (repo root / APIs/):
-  GetAIState.php              Structured JSON state + legalMoves[]
+  GetAIState.php              Structured JSON state + legalMoves[] + activeOnHits
   SubmitAIAction.php          JSON POST action injection
   APIs/CreateTrainingGame.php Programmatic game creation
 ```
 
 ---
 
-## 20. Quick-start checklist
+## 24. Quick-start checklist
 
 ```bash
 # 1. Start the game engine
@@ -839,18 +1085,26 @@ curl -s -X POST http://localhost:8080/APIs/CreateTrainingGame.php \
   -H "Content-Type: application/json" \
   -d '{"p1_deck":"Ira","p2_deck":"Ira","p2_is_ai":true}' | python -m json.tool
 
-# 4. Quick smoke test (MLP, 1 env, no extras)
+# 4. Generate card metadata (deterministic only — no API key needed)
+python3 -m talishar_ai.scripts.generate_card_metadata
+
+# 4b. (Optional) Full metadata with LLM enrichment + hero synergy
+export ANTHROPIC_API_KEY=sk-ant-...
+python3 -m talishar_ai.scripts.generate_card_metadata --generate-hero-abilities
+python3 -m talishar_ai.scripts.generate_card_metadata --enrich --heroes all
+
+# 5. Quick smoke test (MLP, 1 env, no extras)
 uv run python -m scripts.train \
   --total-steps 2000 --rollout-steps 128
 
-# 5. Full-featured training run
+# 6. Full-featured training run
 uv run python -m scripts.train \
   --use-lstm --lstm-hidden 256 \
   --use-embeddings --emb-dim 32 \
   --n-envs 4 --self-play \
   --total-steps 2_000_000
 
-# 6. Evaluate a checkpoint
+# 7. Evaluate a checkpoint
 uv run python -m scripts.evaluate \
   --checkpoint checkpoints/model_final.pt \
   --n-games 20 --log-dir eval_logs/

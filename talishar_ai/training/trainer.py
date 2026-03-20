@@ -44,6 +44,7 @@ from ..features import StateEncoder, N_CARD_SLOTS
 from ..models.network import ActorCritic
 from .rollout import RolloutBuffer
 from .ppo import PPOTrainer
+from .tb_logger import TBLogger
 
 
 class Trainer:
@@ -59,6 +60,7 @@ class Trainer:
         device:           torch.device | None          = None,
         encoder:          StateEncoder | None          = None,
         post_update_fn:   Callable[[int, dict], None] | None = None,
+        tb_logger:        TBLogger | None              = None,
     ) -> None:
         self.model           = model
         self.ppo             = ppo
@@ -72,6 +74,7 @@ class Trainer:
         self._encoder        = encoder or StateEncoder()
         self.use_embeddings  = model.use_embeddings
         self._post_update_fn = post_update_fn
+        self._tb             = tb_logger
 
         # LSTM support: detect recurrent model and pre-allocate hidden state.
         self.use_lstm = getattr(model, "use_lstm", False)
@@ -220,6 +223,10 @@ class Trainer:
                     _hb_games += 1
                     if next_info_list[i].get("result"):
                         all_ep_results.append(next_info_list[i]["result"])
+                    if self._tb and next_info_list[i].get("game_stats"):
+                        gs = next_info_list[i]["game_stats"]
+                        gs_dict = gs.to_dict() if hasattr(gs, "to_dict") else gs
+                        self._tb.log_game(global_step, gs_dict)
                     ep_rewards[i] = 0.0
 
                     # Auto-reset this env without blocking the others —
@@ -325,6 +332,8 @@ class Trainer:
                 last_checkpoint = global_step
 
         self._save(global_step, final=True)
+        if self._tb:
+            self._tb.close()
         print(f"[Trainer] Training complete ({global_step:,} steps).")
 
     # ------------------------------------------------------------------
@@ -356,6 +365,9 @@ class Trainer:
             f"V={stats['value_loss']:.4f} "
             f"H={stats['entropy']:.4f}"
         )
+
+        if self._tb:
+            self._tb.log_training(step, stats, ep_rewards, ep_results, sps)
 
     def _extract_card_ids(self, info_list: list[dict]) -> np.ndarray:
         """
