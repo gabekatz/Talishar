@@ -69,7 +69,7 @@ class TalisharEnv(gym.Env):
         p2_is_ai: bool = True,
         player_id: int = 1,
         shaped_reward_scale: float = 0.01,
-        equip_penalty_scale: float = 0.005,
+        equip_penalty_scale: float = 0.02,
         max_steps: int = 2000,
         deck_pool: list[str] | None = None,
         fill_from_inventory: bool = False,
@@ -106,6 +106,11 @@ class TalisharEnv(gym.Env):
         self._game_name: str  = ""
         self._auth_key:  str  = ""
         self._p2_key:    str  = ""
+        self._hero_id:   str  = ""
+        self._prev_phase: str = ""
+        self._prev_turn_no: int = 0
+        self._turn0_damage_dealt: int = 0  # cumulative damage dealt on turn 0
+        self._turn0_was_offensive: bool = False  # were we the attacking player on turn 0?
         self._prev_my_health:   int = 20
         self._prev_opp_health:  int = 20
         self._prev_my_equip_ids:  list[str] = []
@@ -153,6 +158,14 @@ class TalisharEnv(gym.Env):
         self._prev_opp_health = state.get("theirState", {}).get("health", 20)
         self._prev_my_equip_ids  = self._extract_equip_ids(state, "myState")
         self._prev_opp_equip_ids = self._extract_equip_ids(state, "theirState")
+        # Detect hero ID for hero-aware equipment utility
+        char_zone = state.get("myState", {}).get("character", [])
+        self._hero_id = char_zone[0].get("cardID", "") if char_zone else ""
+        self._prev_phase = (state.get("phase") or {}).get("turnPhase", "")
+        self._prev_turn_no = 0
+        self._turn0_damage_dealt = 0
+        # On turn 0, if our first phase is NOT defense, we're the attacking player
+        self._turn0_was_offensive = self._prev_phase != "D"
         self._step_count = 0
         self._pitch_history = []
         self._starting_deck_size = int(
@@ -225,6 +238,7 @@ class TalisharEnv(gym.Env):
         self._prev_opp_health = next_state.get("theirState", {}).get("health", 0)
         self._prev_my_equip_ids  = self._extract_equip_ids(next_state, "myState")
         self._prev_opp_equip_ids = self._extract_equip_ids(next_state, "theirState")
+        self._prev_phase = (next_state.get("phase") or {}).get("turnPhase", "")
 
         # Inject pitch stack state so the encoder can build features from it
         next_state["_pitch_stack"] = {
@@ -274,9 +288,11 @@ class TalisharEnv(gym.Env):
         # from card_metadata.json (LLM-scored 0-10).  High-utility equipment
         # like Mask of Momentum (10) gets 2× the penalty of average gear (5).
         #
-        # Turn 0 gets an extra-strong penalty because both players redraw to
-        # intellect at end of turn — hand cards used to block are "free" but
-        # equipment is permanent.
+        # The penalty must dominate the HP-shaping signal because equipment
+        # value compounds across all remaining turns.  On turn 0 blocking
+        # 1 Kodachi damage with hand cards is free (redraw to intellect),
+        # so the equipment penalty must far outweigh the 1-HP shaping signal
+        # to prevent the model from trading equipment for trivial blocks.
         if self.equip_penalty_scale > 0:
             curr_my_ids  = self._extract_equip_ids(state, "myState")
             curr_opp_ids = self._extract_equip_ids(state, "theirState")
@@ -291,15 +307,38 @@ class TalisharEnv(gym.Env):
 
             turn_no = int(state.get("turnNumber", 0) or 0)
 
-            # Early-game multiplier: 3x penalty on turn 0, 2x on turn 1,
-            # fading to 1x by turn 10+.
+            # Early-game multiplier: equipment value is proportional to how
+            # many future turns it would have been available.  On turn 0 the
+            # penalty is 5× to strongly discourage blocking when hand cards
+            # are free (redraw to intellect).  Fades to 1× by turn 15+.
             if turn_no == 0:
-                early_mult = 3.0
+                early_mult = 5.0
             else:
-                early_mult = max(1.0, 2.0 - turn_no / 10.0)
+                early_mult = max(1.0, 3.0 - turn_no / 7.5)
+
+            # Defense-phase multiplier: losing equipment while defending
+            # (e.g. activating a weapon/equipment ability for no benefit)
+            # is always wasteful — the activation effect only matters on
+            # attack.  Apply an extra 2× penalty so the model learns that
+            # destroying equipment during defense is never correct.
+            if my_lost_ids and self._prev_phase == "D":
+                early_mult *= 2.0
 
             equip_signal = self.equip_penalty_scale * (opp_lost_utility - my_lost_utility * early_mult)
             shaped += equip_signal
+
+        # Turn-0 wasted aggression: if we were the offensive player on turn 0
+        # and dealt zero damage the entire turn, we wasted our attack.  On
+        # turn 0, hand cards are redrawn either way, so attacks that get fully
+        # blocked have zero value — the model should have arsenaled a strong
+        # card instead.  Signal fires once at the turn 0→1 transition.
+        turn_no = int(state.get("turnNumber", 0) or 0)
+        if delta_opp > 0 and self._prev_turn_no == 0:
+            self._turn0_damage_dealt += delta_opp
+        if turn_no > 0 and self._prev_turn_no == 0:
+            if self._turn0_was_offensive and self._turn0_damage_dealt == 0:
+                shaped -= self.shaped_reward_scale * 2.0
+        self._prev_turn_no = turn_no
 
         return float(np.clip(shaped, -1.0, 1.0))
 
@@ -338,9 +377,21 @@ class TalisharEnv(gym.Env):
         ]
 
     def _equip_utility(self, card_id: str) -> float:
-        """Return equipment utility weight: 5→1.0 (average), 10→2.0, 0→0.0."""
+        """Return equipment utility weight incorporating hero synergy.
+
+        Base utility comes from card_metadata (LLM-scored 0-10).  If the
+        current hero has a synergy score for this equipment, we take the
+        max of base utility and synergy — equipment that's core to the
+        hero's strategy should never have a trivial penalty.
+
+        Scale: 5→1.0 (average), 10→2.0, 0→0.0.
+        """
         meta = self._card_metadata.get(card_id, {})
         util = int(meta.get("equipment_utility", _DEFAULT_EQUIP_UTILITY))
+        if self._hero_id:
+            hero_syn = meta.get("hero_scores", {}).get(self._hero_id, {})
+            syn = int(hero_syn.get("hero_synergy", 0))
+            util = max(util, syn)
         return util / 5.0
 
     def _make_info(

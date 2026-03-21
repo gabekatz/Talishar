@@ -319,6 +319,31 @@ def compute_deterministic_values(cards: dict[str, dict]) -> dict[str, dict]:
 
             card["block_willingness"] = bw
 
+            # ── Equipment utility floor (deterministic) ──
+            # The LLM scores equipment_utility based on ability text in
+            # isolation, but misses that equipment with defense and durability
+            # keywords has inherent value as a multi-use blocking resource.
+            # Set a minimum floor; the LLM score can still raise it higher.
+            util_floor = 0
+            if defense >= 2:
+                util_floor = 3      # 2+ defense = meaningful block resource
+            elif defense >= 1:
+                util_floor = 2      # 1 defense = minor but real
+            # Durability keywords imply the equipment does something on
+            # activation or has repeated use — bump the floor.
+            if "battleworn" in kws:
+                util_floor = max(util_floor, 4)  # multi-use, activated
+            elif "temper" in kws:
+                util_floor = max(util_floor, 3)  # multi-use
+            elif "bladebreak" in kws:
+                util_floor = max(util_floor, 3)  # one-shot but powerful effect
+            # Non-blocking equipment with 0 defense and no keywords (e.g.
+            # quivers, proto-bases) keeps floor=0 — LLM score stands.
+            if util_floor > 0:
+                existing = card.get("equipment_utility", 0)
+                if existing < util_floor:
+                    card["equipment_utility"] = util_floor
+
         # ── Arsenal value (deterministic) ──
         # In FaB you can only pitch and block from hand, NOT from arsenal.
         # A card in arsenal can only be PLAYED (as its type allows).  Cards
@@ -702,9 +727,9 @@ def enrich_with_llm(cards: dict[str, dict], batch_size: int = 50) -> dict[str, d
     )
     for cid, data in attack_enriched.items():
         if cid in cards:
+            cards[cid]["has_on_hit"] = bool(data.get("has_on_hit"))
             if data.get("has_on_hit"):
                 cards[cid]["on_hit_value"] = data.get("on_hit_value", 0)
-                cards[cid]["has_on_hit"]   = True
             if data.get("conditional_cost"):
                 cards[cid]["conditional_cost"] = data["conditional_cost"]
             if data.get("token_generation", 0) > 0:
@@ -717,6 +742,7 @@ def enrich_with_llm(cards: dict[str, dict], batch_size: int = 50) -> dict[str, d
     )
     for cid, data in action_enriched.items():
         if cid in cards:
+            cards[cid]["effect_value"] = data.get("effect_value", 0)
             if data.get("conditional_cost"):
                 cards[cid]["conditional_cost"] = data["conditional_cost"]
             if data.get("token_generation", 0) > 0:
@@ -743,12 +769,11 @@ def enrich_with_llm(cards: dict[str, dict], batch_size: int = 50) -> dict[str, d
     )
     for cid, data in reaction_enriched.items():
         if cid in cards:
+            cards[cid]["pump_value"] = data.get("pump_value", 0)
             if data.get("conditional_cost"):
                 cards[cid]["conditional_cost"] = data["conditional_cost"]
             if data.get("token_generation", 0) > 0:
                 cards[cid]["token_generation"] = data["token_generation"]
-            if data.get("pump_value", 0) > 0:
-                cards[cid]["pump_value"] = data["pump_value"]
 
     # ── Instants: conditions, tokens, disruption ──
     instant_enriched = _enrich_batch(
@@ -757,12 +782,11 @@ def enrich_with_llm(cards: dict[str, dict], batch_size: int = 50) -> dict[str, d
     )
     for cid, data in instant_enriched.items():
         if cid in cards:
+            cards[cid]["disruption_value"] = data.get("disruption_value", 0)
             if data.get("conditional_cost"):
                 cards[cid]["conditional_cost"] = data["conditional_cost"]
             if data.get("token_generation", 0) > 0:
                 cards[cid]["token_generation"] = data["token_generation"]
-            if data.get("disruption_value", 0) > 0:
-                cards[cid]["disruption_value"] = data["disruption_value"]
             if data.get("effect_value", 0) > 0:
                 ev = data["effect_value"]
                 cards[cid]["effect_value"] = ev
@@ -1072,6 +1096,7 @@ def enrich_hero_synergy(
     cards: dict[str, dict],
     hero_ids: list[str],
     batch_size: int = 80,
+    out_path: Path | None = None,
 ) -> dict[str, dict]:
     """
     Use Claude API to score hero-specific card synergies.
@@ -1215,6 +1240,12 @@ def enrich_hero_synergy(
 
         print(f"[metadata]   → {n_scored} cards with synergy >= 1")
 
+        # Flush to disk after each hero so progress survives interruptions
+        if out_path and n_scored > 0:
+            with open(out_path, "w") as f:
+                json.dump(cards, f, indent=2)
+            print(f"[metadata]   Saved checkpoint to {out_path}")
+
     if n_skipped:
         print(f"[metadata] Skipped {n_skipped} hero groups (already scored)")
 
@@ -1337,7 +1368,7 @@ def main():
             print(f"[metadata] --heroes all: {len(hero_ids)} heroes from hero_abilities.json")
         else:
             hero_ids = [h.strip() for h in args.heroes.split(",") if h.strip()]
-        cards = enrich_hero_synergy(cards, hero_ids, batch_size=args.batch_size)
+        cards = enrich_hero_synergy(cards, hero_ids, batch_size=args.batch_size, out_path=out)
 
     # Write output
     with open(out, "w") as f:
