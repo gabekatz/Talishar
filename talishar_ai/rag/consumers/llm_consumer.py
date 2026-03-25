@@ -26,6 +26,7 @@ class LLMActionConsumer:
     def __init__(self, llm_agent: LLMAgent) -> None:
         self._agent = llm_agent
         self._decision_count = 0
+        self._last_decision: LLMDecision | None = None
 
     def act(
         self,
@@ -48,7 +49,13 @@ class LLMActionConsumer:
         """
         decision = self._agent.decide(state, legal_moves)
         self._decision_count += 1
+        self._last_decision = decision
         return decision.action_index, decision
+
+    @property
+    def last_decision(self) -> LLMDecision | None:
+        """Most recent LLMDecision (useful for verbose logging in callers)."""
+        return self._last_decision
 
     @property
     def decisions_made(self) -> int:

@@ -13,14 +13,18 @@ Usage
     uv run python -m talishar_ai.scripts.play_llm --n-games 50 --record --output llm_demos/data.jsonl
 
     # Custom decks and model
-    uv run python -m talishar_ai.scripts.play_llm --deck Ira --opponent-deck Dummy --model claude-sonnet-4-20250514
+    uv run python -m talishar_ai.scripts.play_llm --deck IraScarletRevenger --opponent-deck Dummy --model claude-sonnet-4-20250514
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
+
+# Allow running as `python scripts/play_llm.py` without installing the package
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from talishar_ai.game_manager import GameManager
 from talishar_ai.features import StateEncoder
@@ -83,22 +87,31 @@ def play_one_game(
             time.sleep(0.25)
             continue
 
-        # Choose action
+        # Choose action — both paths go through consumer.act(), so we
+        # always have the LLMDecision available for verbose output.
         if bc_recorder:
             action_idx = bc_recorder.act_and_record(
                 state, legal_moves, game_name, step
             )
+            # Pull the last decision from the consumer for verbose logging
+            decision = consumer.last_decision
         else:
             action_idx, decision = consumer.act(state, legal_moves)
 
-        if verbose and not bc_recorder:
+        if verbose and decision is not None:
             move_desc = ""
             if 0 <= action_idx < len(legal_moves):
                 move_desc = legal_moves[action_idx].get("description", "")
-            print(
-                f"    Step {step}: [{action_idx}] {move_desc} "
-                f"(conf={decision.confidence:.2f})"
-            )
+            n_moves = len(legal_moves)
+            if n_moves <= 1:
+                print(f"    Step {step}: [{action_idx}] {move_desc} (trivial)")
+            else:
+                print(
+                    f"    Step {step}: [{action_idx}/{n_moves-1}] {move_desc} "
+                    f"(conf={decision.confidence:.2f})"
+                )
+                if decision.reasoning:
+                    print(f"      > {decision.reasoning}")
 
         # Submit action
         params = legal_moves[action_idx].get("params", {})
@@ -122,8 +135,8 @@ def main() -> None:
         description="Play FaB games using Claude as the decision engine"
     )
     parser.add_argument("--n-games", type=int, default=5, help="Number of games to play")
-    parser.add_argument("--deck", default="Ira", help="P1 deck name")
-    parser.add_argument("--opponent-deck", default="Ira", help="P2 deck name")
+    parser.add_argument("--deck", default="IraScarletRevenger", help="P1 deck name")
+    parser.add_argument("--opponent-deck", default="IraScarletRevenger", help="P2 deck name")
     parser.add_argument(
         "--model",
         default=None,
