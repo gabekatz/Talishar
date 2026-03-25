@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=0.40",
     "flask>=3.0",
     "gymnasium>=0.29",
+    "lucisearch",
     "numpy>=1.24,<2",
     "requests>=2.31",
     "torch>=2.10.0",
