@@ -14,7 +14,11 @@ Usage
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Allow running as `python scripts/build_card_index.py` without installing the package
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from talishar_ai.rag.card_index import CardIndex, _DEFAULT_PHP_PATH, _DEFAULT_INDEX_DIR
 
