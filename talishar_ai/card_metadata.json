@@ -13810,7 +13810,15 @@
     "rate_delta": -2,
     "block_willingness": 5,
     "arsenal_value": 0,
-    "equipment_utility": 4
+    "equipment_utility": 4,
+    "hero_scores": {
+      "ira_scarlet_revenger": {
+        "hero_synergy": 5
+      },
+      "ira_crimson_haze": {
+        "hero_synergy": 5
+      }
+    }
   },
   "breakneck_battery_blue": {
     "name": "Breakneck Battery",
@@ -40504,9 +40512,17 @@
     "pitch_value": 0,
     "best_use_value": 1,
     "rate_delta": -2,
-    "block_willingness": 2,
+    "block_willingness": 1,
     "arsenal_value": 0,
-    "equipment_utility": 3
+    "equipment_utility": 8,
+    "hero_scores": {
+      "ira_scarlet_revenger": {
+        "hero_synergy": 8
+      },
+      "ira_crimson_haze": {
+        "hero_synergy": 8
+      }
+    }
   },
   "galaxxi_black": {
     "name": "Galaxxi Black",
@@ -58707,6 +58723,12 @@
     "hero_scores": {
       "katsu": {
         "hero_synergy": 1
+      },
+      "ira_scarlet_revenger": {
+        "hero_synergy": 9
+      },
+      "ira_crimson_haze": {
+        "hero_synergy": 9
       }
     },
     "equipment_utility": 10
@@ -99163,6 +99185,9 @@
       },
       "katsu": {
         "hero_synergy": 2
+      },
+      "ira_scarlet_revenger": {
+        "hero_synergy": 7
       }
     },
     "equipment_utility": 4

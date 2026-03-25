@@ -165,6 +165,7 @@ class ActorCritic(nn.Module):
         obs:         torch.Tensor,               # (B, OBS_DIM)
         actions:     torch.Tensor,               # (B,) int64
         action_mask: torch.Tensor,               # (B, MAX_ACTIONS) bool
+        action_feats: torch.Tensor | None = None,  # ignored (compat with action-embed models)
         card_ids:    torch.Tensor | None = None, # (B, N_CARD_SLOTS) int64
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

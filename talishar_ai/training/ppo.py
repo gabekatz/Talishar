@@ -72,6 +72,7 @@ class PPOTrainer:
                     batch["obs"],
                     batch["actions"],
                     batch["action_masks"],
+                    action_feats=batch.get("action_feats"),
                     card_ids=batch.get("card_ids"),
                 )
 
@@ -162,6 +163,8 @@ class PPOTrainer:
                     if self.model.use_embeddings else None
                 )
 
+                afeats_t = torch.from_numpy(buf.action_feats).to(device)
+
                 # Restore initial hidden state for this env's rollout
                 assert buf.initial_hidden_h is not None, (
                     "LSTM buffers must have initial_hidden_h/c set before update_lstm()"
@@ -170,9 +173,15 @@ class PPOTrainer:
                 c0 = torch.from_numpy(buf.initial_hidden_c).unsqueeze(1).to(device)
 
                 # Re-evaluate the full sequence under the current policy
-                log_probs, values, entropy = self.model.evaluate_sequence(
-                    obs_t, masks_t, h0, c0, ep_st, acts_t, ids_t
-                )
+                # Action-embed models need action_feats; standard LSTM ignores it.
+                if getattr(self.model, "use_action_embed", False):
+                    log_probs, values, entropy = self.model.evaluate_sequence(
+                        obs_t, masks_t, h0, c0, ep_st, acts_t, afeats_t, ids_t
+                    )
+                else:
+                    log_probs, values, entropy = self.model.evaluate_sequence(
+                        obs_t, masks_t, h0, c0, ep_st, acts_t, ids_t
+                    )
 
                 ratio  = torch.exp(log_probs - olp_t)
                 surr1  = ratio * adv_t

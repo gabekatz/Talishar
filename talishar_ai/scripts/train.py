@@ -37,6 +37,8 @@ from talishar_ai.card_vocab import CardVocab
 from talishar_ai.deck_utils import list_decks
 from talishar_ai.models.network import ActorCritic
 from talishar_ai.models.lstm_network import LSTMActorCritic
+from talishar_ai.models.action_network import ActionEmbedActorCritic
+from talishar_ai.models.action_lstm_network import LSTMActionEmbedActorCritic
 from talishar_ai.training.ppo import PPOTrainer
 from talishar_ai.training.trainer import Trainer
 from talishar_ai.training.async_trainer import AsyncTrainer
@@ -71,6 +73,12 @@ def parse_args() -> argparse.Namespace:
                    help="LSTM hidden size (requires --use-lstm).")
     p.add_argument("--lstm-layers",     type=int,   default=1,
                    help="Number of stacked LSTM layers (requires --use-lstm).")
+    p.add_argument("--use-action-embed", action="store_true", default=False,
+                   help="Use action embedding architecture (dot-product scoring).")
+    p.add_argument("--query-dim",       type=int,   default=64,
+                   help="Query/key dimension for action embedding scoring.")
+    p.add_argument("--action-hidden",   type=int,   default=64,
+                   help="Hidden size of the per-action encoder.")
     p.add_argument("--vocab-path",      default=None,
                    help="Path to card_vocab.json (built automatically if absent).")
     p.add_argument("--checkpoint-dir",  default="checkpoints")
@@ -196,7 +204,8 @@ def main() -> None:
     print(f"[train] base_url={args.base_url}  p1={p1_label}  p2={p2_label}")
     print(f"[train] device={device}  total_steps={args.total_steps:,}  n_envs={args.n_envs}")
     print(f"[train] embeddings={'ON emb_dim=' + str(args.emb_dim) if args.use_embeddings else 'OFF'}")
-    print(f"[train] policy={'LSTM hidden=' + str(args.lstm_hidden) + ' layers=' + str(args.lstm_layers) if args.use_lstm else 'MLP'}")
+    action_str = f"  action_embed={'ON query_dim=' + str(args.query_dim) + ' action_hidden=' + str(args.action_hidden) if args.use_action_embed else 'OFF'}"
+    print(f"[train] policy={'LSTM hidden=' + str(args.lstm_hidden) + ' layers=' + str(args.lstm_layers) if args.use_lstm else 'MLP'}{action_str}")
 
     # Build / load card vocab if embeddings are requested
     vocab   = CardVocab.load_or_build(args.vocab_path) if args.use_embeddings else None
@@ -215,7 +224,29 @@ def main() -> None:
         )
 
     vocab_size = vocab.size if vocab else 5000
-    if args.use_lstm:
+    if args.use_action_embed and args.use_lstm:
+        model = LSTMActionEmbedActorCritic(
+            hidden         = args.hidden,
+            lstm_hidden    = args.lstm_hidden,
+            n_lstm_layers  = args.lstm_layers,
+            query_dim      = args.query_dim,
+            action_hidden  = args.action_hidden,
+            use_embeddings = args.use_embeddings,
+            vocab_size     = vocab_size,
+            emb_dim        = args.emb_dim,
+        ).to(device)
+        if device.type == "mps":
+            model.lstm = model.lstm.cpu()
+    elif args.use_action_embed:
+        model = ActionEmbedActorCritic(
+            hidden         = args.hidden,
+            query_dim      = args.query_dim,
+            action_hidden  = args.action_hidden,
+            use_embeddings = args.use_embeddings,
+            vocab_size     = vocab_size,
+            emb_dim        = args.emb_dim,
+        ).to(device)
+    elif args.use_lstm:
         model = LSTMActorCritic(
             hidden         = args.hidden,
             lstm_hidden    = args.lstm_hidden,
@@ -268,7 +299,7 @@ def main() -> None:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model_state"])
         # Re-pin LSTM to CPU after checkpoint load (MPS LSTM workaround)
-        if args.use_lstm and device.type == "mps":
+        if (args.use_lstm or (args.use_action_embed and args.use_lstm)) and device.type == "mps":
             model.lstm = model.lstm.cpu()
         # Rebuild optimizer so param groups reference the correct devices,
         # then load state and fixup Adam buffer devices to match params.
@@ -302,6 +333,7 @@ def main() -> None:
         "n_envs": args.n_envs,
         "self_play": args.self_play,
         "use_lstm": args.use_lstm,
+        "use_action_embed": args.use_action_embed,
         "use_embeddings": args.use_embeddings,
         "device": str(device),
     })

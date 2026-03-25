@@ -45,7 +45,7 @@ import torch
 import gymnasium as gym
 
 from ..env import TalisharEnv
-from ..features import StateEncoder
+from ..features import StateEncoder, MAX_ACTIONS, ACTION_DIM
 from ..models.network import ActorCritic
 
 
@@ -114,8 +114,9 @@ class SelfPlayEnv(gym.Env):
             p.requires_grad_(False)
         self._frozen_device = torch.device("cpu")
 
-        # LSTM-specific: maintain P2's hidden state across actions within a game.
+        # Model capability flags
         self._frozen_is_lstm = getattr(self._frozen, "use_lstm", False)
+        self._frozen_use_action_embed = getattr(self._frozen, "use_action_embed", False)
         if self._frozen_is_lstm:
             self._p2_hidden_h, self._p2_hidden_c = self._frozen.init_hidden(1, self._frozen_device)
         else:
@@ -153,7 +154,11 @@ class SelfPlayEnv(gym.Env):
                 f"Action {action} out of range — only {len(legal)} legal moves."
             )
 
-        params = legal[action]["params"]
+        move = legal[action]
+        params = move["params"]
+        # Store the chosen move so _compute_reward's action-level penalty
+        # fires on the correct step (this env bypasses base step()).
+        self._env._last_chosen_move = move
 
         # Both the P1 submission and the P2 driving loop can fail with a
         # RuntimeError when the PHP engine returns an empty/invalid response
@@ -311,9 +316,28 @@ class SelfPlayEnv(gym.Env):
                 mask_t = torch.from_numpy(mask2).unsqueeze(0).to(self._frozen_device)
                 ids_t  = torch.from_numpy(ids2).unsqueeze(0).to(torch.int32).to(self._frozen_device)
 
+                # Action features for action-embed models
+                if self._frozen_use_action_embed:
+                    afeats2 = self._encoder.encode_actions(p2_state_filtered)
+                    afeats_t = torch.from_numpy(afeats2).unsqueeze(0).to(self._frozen_device)
+                else:
+                    afeats_t = None
+
                 with torch.no_grad():
                     use_emb = self._frozen.use_embeddings
-                    if self._frozen_is_lstm:
+                    if self._frozen_use_action_embed and self._frozen_is_lstm:
+                        logits, _, self._p2_hidden_h, self._p2_hidden_c = self._frozen(
+                            obs_t, mask_t,
+                            self._p2_hidden_h, self._p2_hidden_c,
+                            afeats_t,
+                            ids_t if use_emb else None,
+                        )
+                    elif self._frozen_use_action_embed:
+                        logits, _ = self._frozen(
+                            obs_t, mask_t, afeats_t,
+                            ids_t if use_emb else None,
+                        )
+                    elif self._frozen_is_lstm:
                         logits, _, self._p2_hidden_h, self._p2_hidden_c = self._frozen(
                             obs_t, mask_t,
                             self._p2_hidden_h, self._p2_hidden_c,

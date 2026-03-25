@@ -6,7 +6,21 @@
       "WebFetch(domain:fabrary.net)",
       "WebFetch(domain:api.fabrary.net)",
       "Bash(grep -r \"WTR007\\\\|''''WTR007''''\" /Users/gabrielkatz/code/Talishar/ --include=*.php)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(find . -name *.php -type f -exec grep -l 'Draw a Card' {})",
+      "Bash(2)",
+      "Bash(python3:*)",
+      "Bash(ls /Users/gabrielkatz/code/Talishar/*.php)",
+      "Bash(ls:*)",
+      "Bash(wc -l /Users/gabrielkatz/code/Talishar/Assets/*.txt)",
+      "Bash(grep -n \"^function CardCost\\\\|^function CardType\\\\|^function PowerValue\\\\|^function BlockValue\\\\|^function PitchValue\" /Users/gabrielkatz/code/Talishar/*.php)",
+      "Bash(grep -n activeOnHits /Users/gabrielkatz/code/Talishar/*.php /Users/gabrielkatz/code/Talishar/APIs/*.php)",
+      "Bash(grep -A 10 \"class.*ChainLink\\\\|struct.*ChainLink\" /Users/gabrielkatz/code/Talishar/*.php)",
+      "Bash(grep:*)",
+      "Bash(pip show:*)",
+      "Bash(python -c \":*)",
+      "Bash(uv pip:*)",
+      "Bash(.venv/bin/pip install:*)"
     ]
   }
 }

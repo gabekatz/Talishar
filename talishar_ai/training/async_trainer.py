@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from torch.distributions import Categorical
 
-from ..features import StateEncoder, N_CARD_SLOTS
+from ..features import StateEncoder, N_CARD_SLOTS, MAX_ACTIONS, ACTION_DIM
 from ..models.network import ActorCritic
 from .rollout import RolloutBuffer
 from .ppo import PPOTrainer
@@ -55,23 +55,26 @@ class _EnvWorker:
         encoder:        StateEncoder,
         use_embeddings: bool,
         use_lstm:       bool,
+        use_action_embed: bool,
         barrier:        threading.Barrier,
         infer_lock:     threading.Lock,
     ) -> None:
-        self.idx            = idx
-        self.env            = env
-        self.model          = model
-        self.buffer         = buffer
-        self.encoder        = encoder
-        self.use_embeddings = use_embeddings
-        self.use_lstm       = use_lstm
-        self._barrier       = barrier
-        self._infer_lock    = infer_lock
+        self.idx              = idx
+        self.env              = env
+        self.model            = model
+        self.buffer           = buffer
+        self.encoder          = encoder
+        self.use_embeddings   = use_embeddings
+        self.use_lstm         = use_lstm
+        self.use_action_embed = use_action_embed
+        self._barrier         = barrier
+        self._infer_lock      = infer_lock
 
         # Per-worker state
-        self.obs:       np.ndarray | None = None
-        self.mask:      np.ndarray | None = None
-        self.card_ids:  np.ndarray | None = None
+        self.obs:          np.ndarray | None = None
+        self.mask:         np.ndarray | None = None
+        self.card_ids:     np.ndarray | None = None
+        self.action_feats: np.ndarray | None = None
         self.episode_start: bool = True
 
         # LSTM hidden state (n_layers, 1, lstm_hidden) — owned by this worker
@@ -93,11 +96,12 @@ class _EnvWorker:
         self._stop = False
 
     def init_obs(self) -> None:
-        """Reset the env and populate initial obs/mask/card_ids."""
+        """Reset the env and populate initial obs/mask/card_ids/action_feats."""
         obs, info = self.env.reset()
-        self.obs      = obs
-        self.mask     = info["legal_mask"]
-        self.card_ids = self.encoder.card_ids(info["raw_state"])
+        self.obs          = obs
+        self.mask         = info["legal_mask"]
+        self.card_ids     = self.encoder.card_ids(info["raw_state"])
+        self.action_feats = self.encoder.encode_actions(info["raw_state"]) if self.use_action_embed else np.zeros((MAX_ACTIONS, ACTION_DIM), dtype=np.float32)
         self.episode_start = True
 
     def run(self) -> None:
@@ -149,9 +153,24 @@ class _EnvWorker:
             obs_t      = torch.from_numpy(self.obs).unsqueeze(0)
             mask_t     = torch.from_numpy(self.mask).unsqueeze(0)
             card_ids_t = torch.from_numpy(self.card_ids).unsqueeze(0).to(torch.int32)
+            afeats_t   = torch.from_numpy(self.action_feats).unsqueeze(0)
 
             with torch.no_grad():
-                if self.use_lstm:
+                if self.use_action_embed and self.use_lstm:
+                    logits, value, new_h, new_c = self.model(
+                        obs_t, mask_t,
+                        self.hidden_h, self.hidden_c,
+                        afeats_t,
+                        card_ids_t if self.use_embeddings else None,
+                    )
+                    self.hidden_h = new_h
+                    self.hidden_c = new_c
+                elif self.use_action_embed:
+                    logits, value = self.model(
+                        obs_t, mask_t, afeats_t,
+                        card_ids_t if self.use_embeddings else None,
+                    )
+                elif self.use_lstm:
                     logits, value, new_h, new_c = self.model(
                         obs_t, mask_t,
                         self.hidden_h, self.hidden_c,
@@ -187,6 +206,7 @@ class _EnvWorker:
                 done          = done,
                 action_mask   = self.mask,
                 card_ids      = self.card_ids,
+                action_feats  = self.action_feats,
                 episode_start = self.episode_start,
             )
 
@@ -217,18 +237,32 @@ class _EnvWorker:
                 self.episode_start = False
 
             # Advance
-            self.obs      = next_obs
-            self.mask     = info["legal_mask"]
-            self.card_ids = self.encoder.card_ids(info["raw_state"])
+            self.obs          = next_obs
+            self.mask         = info["legal_mask"]
+            self.card_ids     = self.encoder.card_ids(info["raw_state"])
+            self.action_feats = self.encoder.encode_actions(info["raw_state"]) if self.use_action_embed else np.zeros((MAX_ACTIONS, ACTION_DIM), dtype=np.float32)
 
     def _compute_bootstrap(self) -> None:
         """Compute V(s) for the state after the last buffered transition."""
         obs_t      = torch.from_numpy(self.obs).unsqueeze(0)
         mask_t     = torch.from_numpy(self.mask).unsqueeze(0)
         card_ids_t = torch.from_numpy(self.card_ids).unsqueeze(0).to(torch.int32)
+        afeats_t   = torch.from_numpy(self.action_feats).unsqueeze(0)
 
         with torch.no_grad():
-            if self.use_lstm:
+            if self.use_action_embed and self.use_lstm:
+                _, value, _, _ = self.model(
+                    obs_t, mask_t,
+                    self.hidden_h, self.hidden_c,
+                    afeats_t,
+                    card_ids_t if self.use_embeddings else None,
+                )
+            elif self.use_action_embed:
+                _, value = self.model(
+                    obs_t, mask_t, afeats_t,
+                    card_ids_t if self.use_embeddings else None,
+                )
+            elif self.use_lstm:
                 _, value, _, _ = self.model(
                     obs_t, mask_t,
                     self.hidden_h, self.hidden_c,
@@ -272,10 +306,11 @@ class AsyncTrainer:
         self.log_freq        = log_freq
         self.device          = device or torch.device("cpu")
         self._encoder        = encoder or StateEncoder()
-        self.use_embeddings  = model.use_embeddings
-        self._post_update_fn = post_update_fn
-        self._tb             = tb_logger
-        self.use_lstm        = getattr(model, "use_lstm", False)
+        self.use_embeddings    = model.use_embeddings
+        self.use_action_embed  = getattr(model, "use_action_embed", False)
+        self._post_update_fn   = post_update_fn
+        self._tb               = tb_logger
+        self.use_lstm          = getattr(model, "use_lstm", False)
         self.n_envs          = len(envs)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -297,15 +332,16 @@ class AsyncTrainer:
         ]
         self._workers = [
             _EnvWorker(
-                idx            = i,
-                env            = envs[i],
-                model          = self._infer_model,
-                buffer         = self._buffers[i],
-                encoder        = self._encoder,
-                use_embeddings = self.use_embeddings,
-                use_lstm       = self.use_lstm,
-                barrier        = self._barrier,
-                infer_lock     = self._infer_lock,
+                idx              = i,
+                env              = envs[i],
+                model            = self._infer_model,
+                buffer           = self._buffers[i],
+                encoder          = self._encoder,
+                use_embeddings   = self.use_embeddings,
+                use_lstm         = self.use_lstm,
+                use_action_embed = self.use_action_embed,
+                barrier          = self._barrier,
+                infer_lock       = self._infer_lock,
             )
             for i in range(self.n_envs)
         ]
@@ -357,6 +393,10 @@ class AsyncTrainer:
         _consecutive_dead_rounds = 0
         _DEAD_THRESHOLD = 2  # restart after this many consecutive dead rounds
         _MIN_HEALTHY_STEPS = self.rollout_steps  # expect at least 1 env's worth
+
+        # Periodic game file cleanup
+        _CLEANUP_INTERVAL = 10  # clean every N updates
+        _last_cleanup = 0
 
         transitions_per_update = self.rollout_steps * self.n_envs
         print(
@@ -458,6 +498,11 @@ class AsyncTrainer:
                     all_ep_rewards.clear()
                     all_ep_results.clear()
 
+                # ---- Periodic game file cleanup ----
+                if update_count - _last_cleanup >= _CLEANUP_INTERVAL:
+                    self._cleanup_games()
+                    _last_cleanup = update_count
+
                 # ---- Checkpoint ----
                 if global_step - last_checkpoint >= self.checkpoint_freq:
                     self._save(global_step)
@@ -489,6 +534,29 @@ class AsyncTrainer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _cleanup_games(self) -> None:
+        """Remove old game directories to prevent PHP server degradation."""
+        games_dir = self._project_root / "Games"
+        if not games_dir.exists():
+            return
+        # Get active game names from workers so we don't delete in-progress games
+        active_games: set[str] = set()
+        for w in self._workers:
+            inner = getattr(w.env, "_env", w.env)
+            gn = getattr(inner, "_game_name", None)
+            if gn:
+                active_games.add(str(gn))
+        removed = 0
+        try:
+            for entry in games_dir.iterdir():
+                if entry.is_dir() and entry.name not in active_games:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+        except Exception:
+            pass  # non-critical
+        if removed > 0:
+            print(f"[AsyncTrainer] Cleaned {removed} old game dirs (kept {len(active_games)} active)")
 
     def _restart_docker(self) -> None:
         """Stop Docker, clean game files, restart, and wait until healthy."""

@@ -40,7 +40,7 @@ from torch.distributions import Categorical
 
 from ..env import TalisharEnv
 from ..parallel_env import ParallelEnvManager
-from ..features import StateEncoder, N_CARD_SLOTS
+from ..features import StateEncoder, N_CARD_SLOTS, MAX_ACTIONS, ACTION_DIM
 from ..models.network import ActorCritic
 from .rollout import RolloutBuffer
 from .ppo import PPOTrainer
@@ -73,6 +73,7 @@ class Trainer:
         # Falls back to a plain StateEncoder (returns all-zero card_ids).
         self._encoder        = encoder or StateEncoder()
         self.use_embeddings  = model.use_embeddings
+        self.use_action_embed = getattr(model, "use_action_embed", False)
         self._post_update_fn = post_update_fn
         self._tb             = tb_logger
 
@@ -126,6 +127,7 @@ class Trainer:
         obs_arr      = np.stack(obs_list)                                    # (N, OBS_DIM)
         mask_arr     = np.stack([i["legal_mask"] for i in info_list])        # (N, MAX_ACTIONS)
         card_ids_arr = self._extract_card_ids(info_list)                     # (N, N_CARD_SLOTS)
+        afeats_arr   = self._extract_action_feats(info_list)                 # (N, MAX_ACTIONS, ACTION_DIM)
 
         ep_rewards: list[float] = [0.0] * self.n_envs
         all_ep_rewards: list[float] = []
@@ -173,9 +175,20 @@ class Trainer:
             mask_t     = torch.from_numpy(mask_arr).to(self.device)      # (N, MAX_ACTIONS)
             # Use int32 to avoid MPS int64 corruption issues
             card_ids_t = torch.from_numpy(card_ids_arr).to(torch.int32).to(self.device)
+            afeats_t   = torch.from_numpy(afeats_arr).to(self.device)    # (N, MAX_ACTIONS, ACTION_DIM)
 
             with torch.no_grad():
-                if self.use_lstm:
+                if self.use_action_embed and self.use_lstm:
+                    logits, values, new_h, new_c = model(
+                        obs_t, mask_t,
+                        self._hidden_h, self._hidden_c,
+                        afeats_t,
+                        card_ids_t if self.use_embeddings else None,
+                    )
+                    self._hidden_h, self._hidden_c = new_h, new_c
+                elif self.use_action_embed:
+                    logits, values = model(obs_t, mask_t, afeats_t, card_ids_t if self.use_embeddings else None)
+                elif self.use_lstm:
                     logits, values, new_h, new_c = model(
                         obs_t, mask_t,
                         self._hidden_h, self._hidden_c,
@@ -211,6 +224,7 @@ class Trainer:
                     done          = done,
                     action_mask   = mask_arr[i],
                     card_ids      = card_ids_arr[i],
+                    action_feats  = afeats_arr[i],
                     episode_start = bool(episode_starts_np[i]),
                 )
 
@@ -245,10 +259,11 @@ class Trainer:
 
             episode_starts_np = next_episode_starts
 
-            # Advance obs/mask/card_ids for next step
+            # Advance obs/mask/card_ids/action_feats for next step
             obs_arr      = np.stack(next_obs_list)
             mask_arr     = np.stack([info["legal_mask"] for info in next_info_list])
             card_ids_arr = self._extract_card_ids(next_info_list)
+            afeats_arr   = self._extract_action_feats(next_info_list)
 
             # ---- Periodic heartbeat (once per minute) --------------------
             now = time.time()
@@ -272,8 +287,21 @@ class Trainer:
                 obs_t      = torch.from_numpy(obs_arr).to(self.device)
                 mask_t     = torch.from_numpy(mask_arr).to(self.device)
                 card_ids_t = torch.from_numpy(card_ids_arr).to(torch.int32).to(self.device)
+                afeats_t   = torch.from_numpy(afeats_arr).to(self.device)
                 with torch.no_grad():
-                    if self.use_lstm:
+                    if self.use_action_embed and self.use_lstm:
+                        _, last_values, _, _ = model(
+                            obs_t, mask_t,
+                            self._hidden_h, self._hidden_c,
+                            afeats_t,
+                            card_ids_t if self.use_embeddings else None,
+                        )
+                    elif self.use_action_embed:
+                        _, last_values = model(
+                            obs_t, mask_t, afeats_t,
+                            card_ids_t if self.use_embeddings else None,
+                        )
+                    elif self.use_lstm:
                         _, last_values, _, _ = model(
                             obs_t, mask_t,
                             self._hidden_h, self._hidden_c,
@@ -368,6 +396,18 @@ class Trainer:
 
         if self._tb:
             self._tb.log_training(step, stats, ep_rewards, ep_results, sps)
+
+    def _extract_action_feats(self, info_list: list[dict]) -> np.ndarray:
+        """Extract action feature arrays from a list of env info dicts."""
+        if self.use_action_embed:
+            return np.stack([
+                self._encoder.encode_actions(info["raw_state"]) for info in info_list
+            ])  # (N, MAX_ACTIONS, ACTION_DIM)
+        # When action embeddings are disabled, return zeros — unused by the model
+        # but keeps the buffer shapes consistent.
+        return np.zeros(
+            (len(info_list), MAX_ACTIONS, ACTION_DIM), dtype=np.float32
+        )
 
     def _extract_card_ids(self, info_list: list[dict]) -> np.ndarray:
         """

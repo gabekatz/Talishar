@@ -24,7 +24,7 @@ from typing import Generator, Optional
 import numpy as np
 import torch
 
-from ..features import OBS_DIM, MAX_ACTIONS, N_CARD_SLOTS
+from ..features import OBS_DIM, MAX_ACTIONS, N_CARD_SLOTS, ACTION_DIM
 
 
 class RolloutBuffer:
@@ -43,6 +43,7 @@ class RolloutBuffer:
         self.dones          = np.zeros(C,                   dtype=np.float32)
         self.action_masks   = np.zeros((C, MAX_ACTIONS),    dtype=bool)
         self.card_ids       = np.zeros((C, N_CARD_SLOTS),   dtype=np.int64)
+        self.action_feats   = np.zeros((C, MAX_ACTIONS, ACTION_DIM), dtype=np.float32)
         self.episode_starts = np.zeros(C,                   dtype=bool)
         # LSTM-only: set by Trainer before filling the buffer each rollout.
         # Shape (n_lstm_layers, lstm_hidden); None when not using LSTM.
@@ -64,6 +65,7 @@ class RolloutBuffer:
         done:           bool,
         action_mask:    np.ndarray,
         card_ids:       Optional[np.ndarray] = None,
+        action_feats:   Optional[np.ndarray] = None,
         episode_start:  bool = False,
     ) -> None:
         i = self._ptr
@@ -77,6 +79,8 @@ class RolloutBuffer:
         self.episode_starts[i] = episode_start
         if card_ids is not None:
             self.card_ids[i] = card_ids
+        if action_feats is not None:
+            self.action_feats[i] = action_feats
         self._ptr             += 1
 
     def is_full(self) -> bool:
@@ -149,6 +153,7 @@ class RolloutBuffer:
                 "returns":      torch.from_numpy(self.returns[idx]).to(self.device),
                 "action_masks": torch.from_numpy(self.action_masks[idx]).to(self.device),
                 "card_ids":     torch.from_numpy(self.card_ids[idx]).to(torch.int32).to(self.device),
+                "action_feats": torch.from_numpy(self.action_feats[idx]).to(self.device),
             }
 
     # ------------------------------------------------------------------
@@ -185,6 +190,7 @@ class RolloutBuffer:
         merged.dones        = np.concatenate([b.dones        for b in buffers], axis=0)
         merged.action_masks = np.concatenate([b.action_masks for b in buffers], axis=0)
         merged.card_ids     = np.concatenate([b.card_ids     for b in buffers], axis=0)
+        merged.action_feats = np.concatenate([b.action_feats for b in buffers], axis=0)
         merged.advantages   = np.concatenate([b.advantages   for b in buffers], axis=0)
         merged.returns      = np.concatenate([b.returns      for b in buffers], axis=0)
         merged._ptr         = total

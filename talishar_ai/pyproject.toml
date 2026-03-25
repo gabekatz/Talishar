@@ -8,8 +8,10 @@ dependencies = [
     "anthropic>=0.86.0",
     "flask>=3.0",
     "gymnasium>=0.29",
+    "lucisearch>=0.1.1",
     "numpy>=1.24,<2",
     "requests>=2.31",
+    "setuptools<75",
     "tensorboard>=2.14",
     "torch>=2.10.0",
 ]
@@ -18,11 +20,3 @@ dependencies = [
 dev = [
     "playwright>=1.58.0",
 ]
-modified:   __pycache__/env.cpython-311.pyc
-modified:   card_metadata.json
-modified:   env.py
-modified:   hero_abilities.json
-modified:   scripts/__pycache__/generate_card_metadata.cpython-311.pyc
-modified:   scripts/__pycache__/train.cpython-311.pyc
-modified:   scripts/generate_card_metadata.py
- __pycache__/env.cpython-311.pyc card_metadata.json env.py hero_abilities.json scripts/__pycache__/generate_card_metadata.cpython-311.pyc scripts/__pycache__/train.cpython-311.pyc scripts/generate_card_metadata.py

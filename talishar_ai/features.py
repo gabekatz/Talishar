@@ -111,6 +111,39 @@ OBS_DIM = ZONE_DIM + GLOBAL_DIM + PHASE_DIM + CC_DIM + STACK_DIM + OPP_DIM + HAN
 
 MAX_ACTIONS = 64
 
+# ---------------------------------------------------------------------------
+# Action feature encoding
+# ---------------------------------------------------------------------------
+
+ACTION_DIM = 34  # floats per legal action
+
+# Map PHP ActionType strings → one-hot index (16 categories)
+_ACTION_TYPE_INDEX: dict[str, int] = {
+    "PLAY_FROM_HAND":       0,
+    "PLAY_FROM_ARSENAL":    1,
+    "PLAY_FROM_BANISH":     2,
+    "PLAY_FROM_DECK":       3,
+    "PLAY_FROM_GRAVEYARD":  4,
+    "ACTIVATE_EQUIPMENT":   5,
+    "ACTIVATE_ITEM":        6,
+    "ACTIVATE_AURA":        7,
+    "ACTIVATE_ALLY":        8,
+    "ADD_TO_ARSENAL":       9,
+    "PITCH":               10,
+    "PITCH_FROM_HAND":     10,
+    "PITCH_TO_DECK":       11,
+    "OK":                  12,
+    "CHOOSE_CARD":         13,
+    "CHOOSE_CARD_OPT":     13,
+    "POPUP_CHOICE":        13,
+    "YES_NO":              13,
+    "ACTIVATE_CHAIN_LINK": 14,
+    "ACTIVATE_LANDMARK":   14,
+    "ACTIVATE_PERMANENT":  14,
+    "ACTIVATE_PAST_CHAIN_LINK": 14,
+}
+_N_ACTION_TYPES = 16  # one-hot size (index 15 = OTHER)
+
 # Type string → one-hot index (index 7 = catch-all / unknown)
 _TYPE_INDEX: dict[str, int] = {
     "AA": 0,
@@ -171,6 +204,86 @@ def card_to_vec(
         if hero_id:
             hero_scores = meta.get("hero_scores", {}).get(hero_id, {})
             vec[17] = min(int(hero_scores.get("hero_synergy", 0)), 10) / 10.0
+
+    return vec
+
+
+def action_to_vec(
+    move: dict[str, Any],
+    metadata: dict[str, dict] | None = None,
+    hero_id: str = "",
+    ctx: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """
+    Encode a single legal move dict into an ACTION_DIM-float vector.
+
+    Layout (ACTION_DIM = 34):
+      [0-15]  action type one-hot (16 categories)
+      [16]    cost / 10
+      [17]    power / 10
+      [18]    defense / 10
+      [19]    pitch / 3
+      [20]    block_willingness / 10  (equipment preservation signal)
+      [21]    equipment_utility / 10
+      [22]    attack_value / 10
+      [23]    arsenal_value / 10
+      [24]    on_hit_value / 5
+      [25]    hero_synergy / 10
+      [26]    has_go_again (binary)
+      [27]    effect_value / 10
+      --- context-aware features (require game state) ---
+      [28]    is_defense_phase (binary)
+      [29]    is_first_turn (binary)
+      [30]    hand_block_available / 35  — total hand defense (why use equipment?)
+      [31]    counters_remaining / 5     — durability counters on this specific card
+      [32]    destroys_on_use (binary)   — 1 if equipment with 0 counters (gone after block/activate)
+      [33]    defense_gap / 15           — incoming attack minus defense already committed
+
+    Moves without a cardID (PASS, BUTTON choices, etc.) have zeros in the
+    card stat/metadata slots — the action type one-hot alone distinguishes them.
+    """
+    vec = np.zeros(ACTION_DIM, dtype=np.float32)
+
+    # Action type one-hot
+    action_type = move.get("type", "")
+    type_idx = _ACTION_TYPE_INDEX.get(action_type, _N_ACTION_TYPES - 1)
+    vec[type_idx] = 1.0
+
+    # Card stats (from PHP CardStats on the move)
+    stats = move.get("stats") or {}
+    cid = move.get("cardID", "") or ""
+
+    if stats:
+        vec[16] = min(int(stats.get("cost",    0) or 0), 10) / 10.0
+        vec[17] = min(int(stats.get("power",   0) or 0), 10) / 10.0
+        vec[18] = min(int(stats.get("defense", 0) or 0), 10) / 10.0
+        vec[19] = min(int(stats.get("pitch",   0) or 0),  3) /  3.0
+
+    # Card metadata (from card_metadata.json)
+    if metadata and cid:
+        meta = metadata.get(cid, {})
+        vec[20] = min(int(meta.get("block_willingness", 0)), 10) / 10.0
+        vec[21] = min(int(meta.get("equipment_utility", 0)), 10) / 10.0
+        vec[22] = min(float(meta.get("attack_value", 0)), 10) / 10.0
+        vec[23] = min(int(meta.get("arsenal_value", 0)), 10) / 10.0
+        vec[24] = min(int(meta.get("on_hit_value", 0)), 5) / 5.0
+        if hero_id:
+            hero_scores = meta.get("hero_scores", {}).get(hero_id, {})
+            vec[25] = min(int(hero_scores.get("hero_synergy", 0)), 10) / 10.0
+        vec[26] = 1.0 if "goAgain" in (meta.get("keywords") or []) else 0.0
+        vec[27] = min(float(meta.get("effect_value", 0)), 10) / 10.0
+
+    # Context-aware features (from game state)
+    if ctx:
+        vec[28] = ctx.get("is_defense_phase", 0.0)
+        vec[29] = ctx.get("is_first_turn", 0.0)
+        vec[30] = min(ctx.get("hand_block_available", 0), 35) / 35.0
+        # Per-card durability: look up this card's counters from the equipment zone
+        card_counters = ctx.get("equip_counters", {}).get(cid, -1)
+        if card_counters >= 0 and action_type in ("ACTIVATE_EQUIPMENT", "CHOOSE_CARD"):
+            vec[31] = min(card_counters, 5) / 5.0
+            vec[32] = 1.0 if card_counters == 0 else 0.0
+        vec[33] = min(max(ctx.get("defense_gap", 0), 0), 15) / 15.0
 
     return vec
 
@@ -673,6 +786,71 @@ class StateEncoder:
         Equivalent to calling ``encode()`` and ``card_ids()`` separately.
         """
         return self.encode(state), self.card_ids(state)
+
+    def encode_actions(self, state: dict[str, Any]) -> np.ndarray:
+        """
+        Encode legal moves into a (MAX_ACTIONS, ACTION_DIM) float32 array.
+
+        Each row i corresponds to legalMoves[i].  Unused slots are zero-filled.
+        """
+        moves = state.get("legalMoves", [])
+        meta = self._metadata or None
+        hero_id = self._hero_id
+        if not hero_id:
+            char_zone = state.get("myState", {}).get("character", [])
+            if char_zone:
+                hero_id = char_zone[0].get("cardID", "") or ""
+
+        # Build context dict from game state for consequence-aware features
+        ctx = self._build_action_context(state)
+
+        out = np.zeros((MAX_ACTIONS, ACTION_DIM), dtype=np.float32)
+        for i, move in enumerate(moves[:MAX_ACTIONS]):
+            out[i] = action_to_vec(move, meta, hero_id, ctx)
+        return out
+
+    def _build_action_context(self, state: dict[str, Any]) -> dict[str, Any]:
+        """
+        Extract game-state context needed by consequence-aware action features.
+
+        Returns a dict with:
+          is_defense_phase:    1.0 if in defense phase
+          is_first_turn:       1.0 if turn 0
+          hand_block_available: total defense value of hand cards
+          equip_counters:      {cardID: counter_count} for equipment zone
+          defense_gap:         incoming attack power minus defense already committed
+        """
+        my = state.get("myState", {})
+        phase = (state.get("phase") or {}).get("turnPhase", "")
+        turn_no = int(state.get("turnNumber", 0) or 0)
+
+        # Total hand defense available
+        hand_cards = my.get("hand", [])
+        hand_defense = sum(
+            int((c.get("stats") or {}).get("defense", 0) or 0)
+            for c in hand_cards
+        )
+
+        # Equipment counters: map cardID → counter value for each equipment piece
+        equip_counters: dict[str, int] = {}
+        for card in my.get("equipment", []):
+            cid = card.get("cardID", "") or ""
+            if cid:
+                equip_counters[cid] = int(card.get("counters", 0) or 0)
+
+        # Defense gap: how much more defense is needed to fully block
+        cc = state.get("combatChain") or {}
+        chain_power = int(cc.get("totalPower", 0) or 0)
+        chain_defense = int(cc.get("totalDefense", 0) or 0)
+        defense_gap = chain_power - chain_defense  # positive = still taking damage
+
+        return {
+            "is_defense_phase": 1.0 if phase == "D" else 0.0,
+            "is_first_turn": 1.0 if turn_no == 0 else 0.0,
+            "hand_block_available": hand_defense,
+            "equip_counters": equip_counters,
+            "defense_gap": defense_gap,
+        }
 
     def action_mask(self, state: dict[str, Any]) -> np.ndarray:
         """

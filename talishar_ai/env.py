@@ -73,6 +73,7 @@ class TalisharEnv(gym.Env):
         max_steps: int = 2000,
         deck_pool: list[str] | None = None,
         fill_from_inventory: bool = False,
+        use_strategy_mask: bool = True,
     ) -> None:
         super().__init__()
         self.gm                  = game_manager
@@ -85,6 +86,7 @@ class TalisharEnv(gym.Env):
         self.max_steps           = max_steps
         self.deck_pool           = deck_pool
         self.fill_from_inventory = fill_from_inventory
+        self.use_strategy_mask   = use_strategy_mask
 
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
@@ -116,6 +118,7 @@ class TalisharEnv(gym.Env):
         self._prev_my_equip_ids:  list[str] = []
         self._prev_opp_equip_ids: list[str] = []
         self._last_state: dict[str, Any] = {}
+        self._last_chosen_move: dict[str, Any] | None = None
         self._step_count: int = 0
 
         # Pitch stack tracking: records the pitch values (1=red, 2=yellow, 3=blue)
@@ -167,6 +170,7 @@ class TalisharEnv(gym.Env):
         # On turn 0, if our first phase is NOT defense, we're the attacking player
         self._turn0_was_offensive = self._prev_phase != "D"
         self._step_count = 0
+        self._last_chosen_move = None
         self._pitch_history = []
         self._starting_deck_size = int(
             state.get("myState", {}).get("deckCount", 60) or 60
@@ -190,6 +194,7 @@ class TalisharEnv(gym.Env):
 
         move   = legal[action]
         params = move["params"]
+        self._last_chosen_move = move
 
         # Track pitch stacking: when the AI places a card on deck bottom
         # during PDECK phase, record its pitch value for second-cycle planning.
@@ -256,9 +261,147 @@ class TalisharEnv(gym.Env):
     # Action masking (for masked PPO)
     # ------------------------------------------------------------------
 
+    _PASS_MODE = 99
+
+    def _strategy_mask(self, state: dict, base_mask: np.ndarray) -> np.ndarray:
+        """Zero out legal-but-dominated actions.
+
+        These are actions that are technically legal but never correct
+        given the game state.  Hard-masking them removes the need for
+        the model to learn these rules via reward shaping.
+
+        Rules are conservative — only mask when the dominated-ness is
+        unambiguous.  If unsure, leave the action legal and let the
+        model decide.
+        """
+        moves = state.get("legalMoves", [])
+        if not moves:
+            return base_mask
+
+        mask = base_mask.copy()
+        phase = (state.get("phase") or {}).get("turnPhase", "")
+        turn_no = int(state.get("turnNumber", 0) or 0)
+        my = state.get("myState", {})
+        equip_ids = {c.get("cardID", "") for c in my.get("equipment", [])}
+
+        # -------------------------------------------------------
+        # Rule 1: Turn-0 defense — block with ALL hand cards
+        #
+        # On turn 0, both players redraw to intellect after combat,
+        # so blocking with hand cards is free.  Equipment lasts the
+        # entire game.  Two sub-rules:
+        #
+        # 1a: If hand defense covers incoming damage, disallow
+        #     equipment blocking and equipment activation.
+        # 1b: If there's still unblocked damage AND hand cards
+        #     are available to block with, disallow passing.
+        #     Every hand card should be thrown in front — they
+        #     cost nothing on turn 0.
+        # -------------------------------------------------------
+        if phase == "D" and turn_no == 0:
+            hand_cards = my.get("hand", [])
+            hand_defense = sum(
+                int((c.get("stats") or {}).get("defense", 0) or 0)
+                for c in hand_cards
+            )
+            cc = state.get("combatChain") or {}
+            chain_power = int(cc.get("totalPower", 0) or 0)
+            chain_defense = int(cc.get("totalDefense", 0) or 0)
+            damage_remaining = chain_power - chain_defense
+
+            # 1a: Mask equipment when hand cards suffice
+            if hand_defense >= damage_remaining:
+                for i, move in enumerate(moves[:len(mask)]):
+                    if not mask[i]:
+                        continue
+                    mtype = move.get("type", "")
+                    cid = move.get("cardID", "") or ""
+                    if mtype == "ACTIVATE_EQUIPMENT":
+                        mask[i] = False
+                    elif mtype in ("CHOOSE_CARD", "CHOOSE_CARD_OPT") and cid in equip_ids:
+                        mask[i] = False
+
+            # 1b: Force full blocking — don't let the model pass
+            # while damage is still coming and hand cards can block.
+            # A hand card with defense > 0 that we haven't committed
+            # yet means passing is dominated.
+            has_hand_blocker = any(
+                mask[i] and moves[i].get("type") in ("CHOOSE_CARD", "CHOOSE_CARD_OPT")
+                and (moves[i].get("cardID", "") or "") not in equip_ids
+                and int((moves[i].get("stats") or {}).get("defense", 0) or 0) > 0
+                for i, _ in enumerate(moves[:len(mask)])
+            )
+            if damage_remaining > 0 and has_hand_blocker:
+                for i, move in enumerate(moves[:len(mask)]):
+                    if not mask[i]:
+                        continue
+                    if move.get("type") == "OK" or move.get("params", {}).get("mode") == self._PASS_MODE:
+                        mask[i] = False
+
+            if not mask.any():
+                return base_mask
+
+        # -------------------------------------------------------
+        # Rule 2: Defense phase — no weapon/equipment activation
+        #
+        # Activating weapons or offensive equipment during the
+        # opponent's attack does nothing useful (no attack to buff)
+        # and destroys the equipment.  Always dominated by passing.
+        #
+        # Exception: some equipment has defensive activated abilities
+        # (e.g. Fyendal's Spring Tunic gaining a resource).  We use
+        # a simple heuristic: if the activation has power > 0, it's
+        # offensive and should be masked.
+        # -------------------------------------------------------
+        if phase == "D":
+            for i, move in enumerate(moves[:len(mask)]):
+                if not mask[i]:
+                    continue
+                if move.get("type") != "ACTIVATE_EQUIPMENT":
+                    continue
+                stats = move.get("stats") or {}
+                power = int(stats.get("power", 0) or 0)
+                if power > 0:
+                    mask[i] = False
+
+            if not mask.any():
+                return base_mask
+
+        # -------------------------------------------------------
+        # Rule 3: Arsenal before ending turn
+        #
+        # If the model is about to end its turn (pass/OK in main
+        # or action phase), but ADD_TO_ARSENAL is available, mask
+        # the pass.  Arsenaling a card for next turn is almost
+        # always better than wasting it.
+        #
+        # Only applies when arsenal is empty (the model already
+        # chose not to arsenal earlier if it's full).
+        # -------------------------------------------------------
+        if phase in ("M", "A"):
+            arsenal = my.get("arsenal", [])
+            has_arsenal_action = any(
+                mask[i] and moves[i].get("type") == "ADD_TO_ARSENAL"
+                for i in range(min(len(moves), len(mask)))
+            )
+            if has_arsenal_action and len(arsenal) == 0:
+                for i, move in enumerate(moves[:len(mask)]):
+                    if not mask[i]:
+                        continue
+                    if move.get("type") == "OK" or move.get("params", {}).get("mode") == self._PASS_MODE:
+                        mask[i] = False
+
+                if not mask.any():
+                    return base_mask
+
+        return mask
+
     def action_masks(self) -> np.ndarray:
         """Return bool mask over the MAX_ACTIONS action space."""
-        return self._encoder.action_mask(self._last_state)
+        base = self._encoder.action_mask(self._last_state)
+        if self.use_strategy_mask:
+            return self._strategy_mask(self._last_state, base)
+        return base
 
     # ------------------------------------------------------------------
     # Rendering (no-op)
@@ -281,58 +424,50 @@ class TalisharEnv(gym.Env):
         # Dense shaping: reward for dealing damage, penalty for taking it
         delta_opp = int(self._prev_opp_health) - int(opp_hp)   # positive = we dealt damage
         delta_my  = int(self._prev_my_health)  - int(my_hp)    # positive = we took damage
-        shaped    = self.shaped_reward_scale * (delta_opp - delta_my)
 
-        # Equipment preservation: penalise losing equipment, reward destroying
-        # opponent's.  Penalty is weighted by each card's strategic utility
-        # from card_metadata.json (LLM-scored 0-10).  High-utility equipment
-        # like Mask of Momentum (10) gets 2× the penalty of average gear (5).
+        # Turn-0 damage amplifier: on turn 0 defense, blocking with hand
+        # cards is FREE (both players redraw to intellect).  Failing to
+        # block is a strict mistake — amplify the damage-taken penalty so
+        # the model learns to always block with hand cards on turn 0.
+        damage_mult = 1.0
+        turn_no = int(state.get("turnNumber", 0) or 0)
+        if delta_my > 0 and self._prev_phase == "D" and self._prev_turn_no == 0:
+            damage_mult = 5.0
+
+        shaped = self.shaped_reward_scale * (delta_opp - delta_my * damage_mult)
+
+        # -----------------------------------------------------------
+        # Action-level equipment penalty: penalise the DECISION to use
+        # equipment (block/activate), not the state change.  This
+        # guarantees the penalty is on the exact step where the AI
+        # chose the action, giving PPO a clean gradient signal.
         #
-        # The penalty must dominate the HP-shaping signal because equipment
-        # value compounds across all remaining turns.  On turn 0 blocking
-        # 1 Kodachi damage with hand cards is free (redraw to intellect),
-        # so the equipment penalty must far outweigh the 1-HP shaping signal
-        # to prevent the model from trading equipment for trivial blocks.
+        # The old state-diff approach could misattribute penalties when
+        # equipment disappeared on a different step than the decision
+        # (e.g. during post-combat hit-effect processing) or when the
+        # opponent's effects destroyed our equipment (penalising us for
+        # something we didn't choose).
+        # -----------------------------------------------------------
         if self.equip_penalty_scale > 0:
-            curr_my_ids  = self._extract_equip_ids(state, "myState")
+            shaped += self._action_equip_penalty(state)
+
+            # State-diff: ONLY reward destroying opponent's equipment
+            # (positive signal for good attacks — attribution doesn't
+            # matter as much for rewards since any recent attacking
+            # action contributed).
             curr_opp_ids = self._extract_equip_ids(state, "theirState")
-
-            # Diff equipment lists to find which specific cards were lost
-            my_lost_ids  = list((Counter(self._prev_my_equip_ids)  - Counter(curr_my_ids)).elements())
-            opp_lost_ids = list((Counter(self._prev_opp_equip_ids) - Counter(curr_opp_ids)).elements())
-
-            # Sum utility-weighted losses (default 5 → weight 1.0)
-            my_lost_utility  = sum(self._equip_utility(cid) for cid in my_lost_ids)
-            opp_lost_utility = sum(self._equip_utility(cid) for cid in opp_lost_ids)
-
-            turn_no = int(state.get("turnNumber", 0) or 0)
-
-            # Early-game multiplier: equipment value is proportional to how
-            # many future turns it would have been available.  On turn 0 the
-            # penalty is 5× to strongly discourage blocking when hand cards
-            # are free (redraw to intellect).  Fades to 1× by turn 15+.
-            if turn_no == 0:
-                early_mult = 5.0
-            else:
-                early_mult = max(1.0, 3.0 - turn_no / 7.5)
-
-            # Defense-phase multiplier: losing equipment while defending
-            # (e.g. activating a weapon/equipment ability for no benefit)
-            # is always wasteful — the activation effect only matters on
-            # attack.  Apply an extra 2× penalty so the model learns that
-            # destroying equipment during defense is never correct.
-            if my_lost_ids and self._prev_phase == "D":
-                early_mult *= 2.0
-
-            equip_signal = self.equip_penalty_scale * (opp_lost_utility - my_lost_utility * early_mult)
-            shaped += equip_signal
+            opp_lost_ids = list(
+                (Counter(self._prev_opp_equip_ids) - Counter(curr_opp_ids)).elements()
+            )
+            if opp_lost_ids:
+                opp_lost_utility = sum(self._equip_utility(cid) for cid in opp_lost_ids)
+                shaped += self.equip_penalty_scale * opp_lost_utility
 
         # Turn-0 wasted aggression: if we were the offensive player on turn 0
         # and dealt zero damage the entire turn, we wasted our attack.  On
         # turn 0, hand cards are redrawn either way, so attacks that get fully
         # blocked have zero value — the model should have arsenaled a strong
         # card instead.  Signal fires once at the turn 0→1 transition.
-        turn_no = int(state.get("turnNumber", 0) or 0)
         if delta_opp > 0 and self._prev_turn_no == 0:
             self._turn0_damage_dealt += delta_opp
         if turn_no > 0 and self._prev_turn_no == 0:
@@ -341,6 +476,53 @@ class TalisharEnv(gym.Env):
         self._prev_turn_no = turn_no
 
         return float(np.clip(shaped, -1.0, 1.0))
+
+    def _action_equip_penalty(self, state: dict) -> float:
+        """Penalty for the AI's CHOSEN action if it uses/destroys equipment.
+
+        Fires on the exact step where the decision was made, ensuring
+        correct credit assignment for PPO.  Covers:
+        - Blocking with equipment (CHOOSE_CARD for an equipment card)
+        - Activating equipment (ACTIVATE_EQUIPMENT)
+
+        The penalty is scaled by card utility, turn number, and phase.
+        """
+        move = self._last_chosen_move
+        if not move:
+            return 0.0
+
+        action_type = move.get("type", "")
+        card_id = move.get("cardID", "") or ""
+        if not card_id:
+            return 0.0
+
+        # Detect equipment-consuming actions
+        is_equip_activate = action_type == "ACTIVATE_EQUIPMENT"
+        is_equip_block = (
+            action_type in ("CHOOSE_CARD", "CHOOSE_CARD_OPT")
+            and card_id in self._prev_my_equip_ids
+        )
+
+        if not (is_equip_activate or is_equip_block):
+            return 0.0
+
+        utility = self._equip_utility(card_id)
+        turn_no = int(state.get("turnNumber", 0) or 0)
+
+        # Turn-based multiplier
+        if turn_no == 0:
+            early_mult = 5.0
+        else:
+            early_mult = max(1.0, 3.0 - turn_no / 7.5)
+
+        # Defense-phase multiplier: using equipment while defending is
+        # almost always wasteful.  Use _prev_phase (the phase when the
+        # AI had priority and chose the action) for reliable detection
+        # even during post-combat hit-effect processing.
+        if self._prev_phase == "D":
+            early_mult *= 2.0
+
+        return -self.equip_penalty_scale * utility * early_mult
 
     def _terminal_reward(self, state: dict) -> float:
         r = self._result(state)
@@ -397,8 +579,10 @@ class TalisharEnv(gym.Env):
     def _make_info(
         self, state: dict, result: str | None, truncated: bool = False
     ) -> dict:
+        base_mask = self._encoder.action_mask(state)
+        mask = self._strategy_mask(state, base_mask) if self.use_strategy_mask else base_mask
         info: dict = {
-            "legal_mask":  self._encoder.action_mask(state),
+            "legal_mask":  mask,
             "legal_moves": state.get("legalMoves", []),
             "raw_state":   state,
             "result":      result,

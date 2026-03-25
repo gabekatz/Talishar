@@ -34,16 +34,33 @@ from talishar_ai.game_manager import GameManager
 from talishar_ai.features import StateEncoder
 from talishar_ai.models.network import ActorCritic
 from talishar_ai.models.lstm_network import LSTMActorCritic
+from talishar_ai.models.action_network import ActionEmbedActorCritic
+from talishar_ai.models.action_lstm_network import LSTMActionEmbedActorCritic
 
 
 def load_model(path: str, device: torch.device):
     ckpt = torch.load(path, map_location=device)
     sd   = ckpt["model_state"]
-    has_lstm   = any("lstm" in k for k in sd)
-    has_emb    = "embedding.weight" in sd
+    has_lstm       = any("lstm" in k for k in sd)
+    has_action_emb = "action_encoder.0.weight" in sd
+    has_emb        = "embedding.weight" in sd
     emb_dim    = sd["embedding.weight"].shape[1] if has_emb else 32
     vocab_size = sd["embedding.weight"].shape[0] if has_emb else 5000
-    if has_lstm:
+
+    # Infer action_feat_dim from checkpoint (may differ from current ACTION_DIM)
+    action_feat_dim = int(sd["action_encoder.0.weight"].shape[1]) if has_action_emb else 28
+
+    if has_action_emb and has_lstm:
+        model = LSTMActionEmbedActorCritic(
+            use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+            action_feat_dim=action_feat_dim,
+        ).to(device)
+    elif has_action_emb:
+        model = ActionEmbedActorCritic(
+            use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
+            action_feat_dim=action_feat_dim,
+        ).to(device)
+    elif has_lstm:
         model = LSTMActorCritic(
             use_embeddings=has_emb, emb_dim=emb_dim, vocab_size=vocab_size,
         ).to(device)
@@ -54,7 +71,10 @@ def load_model(path: str, device: torch.device):
     model.load_state_dict(sd)
     model.eval()
     step = ckpt.get("step", 0)
-    print(f"Loaded {path}  (step {step:,}, lstm={has_lstm}, emb={has_emb})")
+    print(
+        f"Loaded {path}  (step {step:,}, lstm={has_lstm}, "
+        f"action_embed={has_action_emb}, emb={has_emb})"
+    )
     return model, has_lstm
 
 
@@ -78,7 +98,8 @@ def main():
     encoder = StateEncoder()
 
     model, is_lstm = load_model(args.checkpoint, device)
-    use_emb = getattr(model, "use_embeddings", False)
+    use_emb        = getattr(model, "use_embeddings", False)
+    use_action_emb = getattr(model, "use_action_embed", False)
 
     # Create game — both players as "human" so the frontend can connect
     game_name, p1_key, p2_key = gm.create_game(
@@ -146,9 +167,20 @@ def main():
                 ids = encoder.card_ids(p2_state)
                 ids_t = torch.from_numpy(ids).unsqueeze(0).to(torch.int32).to(device)
 
+            afeats_t = None
+            if use_action_emb:
+                afeats = encoder.encode_actions(p2_state)
+                # Truncate to model's expected dim (old checkpoints may use fewer features)
+                model_adim = model.action_encoder[0].in_features
+                afeats_t = torch.from_numpy(afeats[:, :model_adim]).unsqueeze(0).to(device)
+
             # Model inference
             with torch.no_grad():
-                if is_lstm:
+                if use_action_emb and is_lstm:
+                    logits, _, hh, hc = model(obs_t, mask_t, hh, hc, afeats_t, ids_t)
+                elif use_action_emb:
+                    logits, _ = model(obs_t, mask_t, afeats_t, ids_t)
+                elif is_lstm:
                     logits, _, hh, hc = model(obs_t, mask_t, hh, hc, ids_t)
                 else:
                     logits, _ = model(obs_t, mask_t, ids_t)
