@@ -363,8 +363,11 @@ class Retriever:
         lines.append(
             f"MY HEALTH: {ctx.my_health} | OPPONENT HEALTH: {ctx.opp_health}"
         )
+        potential_resources = ctx.resources + ctx.total_hand_pitch
         lines.append(
-            f"RESOURCES: {ctx.resources} | ACTION POINTS: {ctx.action_points}"
+            f"RESOURCES: {ctx.resources} (floating) | "
+            f"POTENTIAL: {potential_resources} (pitch cards from hand to generate more) | "
+            f"ACTION POINTS: {ctx.action_points}"
         )
         lines.append(
             f"MY DECK: {ctx.my_deck_count} | OPP DECK: {ctx.opp_deck_count} "
@@ -377,7 +380,7 @@ class Retriever:
             lines.append(f"MY HAND ({len(ctx.hand_cards)} cards):")
             for i, c in enumerate(ctx.hand_cards, 1):
                 kw_str = ", ".join(c.keywords) if c.keywords else "none"
-                lines.append(
+                card_line = (
                     f"  {i}. {c.name} ({c.card_id}) — "
                     f"Type: {c.card_type}, Cost: {c.cost}, "
                     f"Power: {c.power}, Defense: {c.defense}, "
@@ -386,6 +389,9 @@ class Retriever:
                     f"Value: {c.best_use_value:.1f}. "
                     f"Block willingness: {c.block_willingness:.1f}"
                 )
+                if c.functional_text:
+                    card_line += f"\n     Ability: {c.functional_text}"
+                lines.append(card_line)
             lines.append(
                 f"  >> Total hand: power={ctx.total_hand_power}, "
                 f"defense={ctx.total_hand_defense}, pitch={ctx.total_hand_pitch}, "
@@ -404,10 +410,13 @@ class Retriever:
         if ctx.equipment:
             lines.append("MY EQUIPMENT:")
             for c in ctx.equipment:
-                lines.append(
+                equip_line = (
                     f"  - {c.name} ({c.card_id}) — Def: {c.defense}. "
                     f"Keywords: {', '.join(c.keywords) if c.keywords else 'none'}"
                 )
+                if c.functional_text:
+                    equip_line += f"\n    Ability: {c.functional_text}"
+                lines.append(equip_line)
             lines.append("")
 
         # Combat chain (defense phase)

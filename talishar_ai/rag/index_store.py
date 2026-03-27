@@ -35,6 +35,7 @@ CARD_INDEX_SCHEMA = {
     "properties": {
         # Searchable text
         "description": {"type": "text"},
+        "functional_text": {"type": "text"},
         "name": {"type": "text"},
         # Keyword fields (exact match / filtering)
         "card_id": {"type": "keyword"},
@@ -53,6 +54,8 @@ CARD_INDEX_SCHEMA = {
         "best_use_value": {"type": "float"},
         # Boolean
         "has_go_again": {"type": "keyword"},  # "true" / "false" as keyword
+        # Keywords stored as comma-separated string
+        "keywords_csv": {"type": "text"},
     },
 }
 
@@ -113,8 +116,11 @@ class IndexStore:
         # Use provided schema or default to card schema
         index_schema = schema or CARD_INDEX_SCHEMA
 
-        # Create the index (luci.Index.create handles open-or-create)
-        self._index = luci.Index.create(self._index_path, index_schema)
+        # Open existing index, or create a new one
+        if Path(self._index_path).exists():
+            self._index = luci.Index.open(self._index_path)
+        else:
+            self._index = luci.Index.create(self._index_path, index_schema)
 
     # ------------------------------------------------------------------
     # Write operations

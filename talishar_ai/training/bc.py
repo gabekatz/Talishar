@@ -60,11 +60,13 @@ class BCTrainer:
         model:   nn.Module,
         lr:      float        = 1e-4,
         device:  torch.device | None = None,
+        confidence_weight: bool = False,
     ) -> None:
         self.model     = model
         self.device    = device or torch.device("cpu")
         self.optimizer = optim.Adam(model.parameters(), lr=lr)
         self.use_lstm  = getattr(model, "use_lstm", False)
+        self.confidence_weight = confidence_weight
 
     # ------------------------------------------------------------------
     # MLP training (shuffled mini-batches)
@@ -82,7 +84,13 @@ class BCTrainer:
             ids = batch["card_ids"] if self.model.use_embeddings else None
             logits, _ = self.model(batch["obs"], batch["legal_mask"], ids)
 
-            loss = nn.functional.cross_entropy(logits, batch["actions"])
+            if self.confidence_weight:
+                per_sample = nn.functional.cross_entropy(
+                    logits, batch["actions"], reduction="none"
+                )
+                loss = (per_sample * batch["confidence"]).mean()
+            else:
+                loss = nn.functional.cross_entropy(logits, batch["actions"])
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -122,7 +130,10 @@ class BCTrainer:
             )
             # evaluate_sequence returns log_prob of the CHOSEN action.
             # BC loss = negative log-likelihood = -mean(log_prob(human_action))
-            loss = -log_probs.mean()
+            if self.confidence_weight:
+                loss = -(log_probs * t["confidence"]).mean()
+            else:
+                loss = -log_probs.mean()
 
             self.optimizer.zero_grad()
             loss.backward()

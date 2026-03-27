@@ -1,19 +1,22 @@
 """
 play_llm.py — Play games using Claude as the decision engine.
 
-Creates training games against EncounterAI (or a second LLM player)
-and drives P1 with the LLM agent backed by the RAG retrieval layer.
+Creates training games and drives one or both players with the LLM agent
+backed by the RAG retrieval layer.
 
 Usage
 -----
-    # Play 5 games and print results
-    uv run python -m talishar_ai.scripts.play_llm --n-games 5
+    # Play 5 games vs EncounterAI
+    uv run python -m scripts.play_llm --n-games 5
 
-    # Record BC training data
-    uv run python -m talishar_ai.scripts.play_llm --n-games 50 --record --output llm_demos/data.jsonl
+    # Self-play: LLM controls both sides (better BC data)
+    uv run python -m scripts.play_llm --self-play --record --n-games 50 -v
+
+    # Record BC training data vs EncounterAI
+    uv run python -m scripts.play_llm --n-games 50 --record --output llm_demos/data.jsonl
 
     # Custom decks and model
-    uv run python -m talishar_ai.scripts.play_llm --deck IraScarletRevenger --opponent-deck Dummy --model claude-sonnet-4-20250514
+    uv run python -m scripts.play_llm --deck IraScarletRevenger --opponent-deck Dummy --model claude-sonnet-4-20250514
 """
 
 from __future__ import annotations
@@ -36,6 +39,45 @@ from talishar_ai.rag.consumers.llm_consumer import LLMActionConsumer
 from talishar_ai.rag.consumers.bc_recorder import BCRecorder
 
 
+def _do_turn(
+    consumer: LLMActionConsumer,
+    state: dict,
+    legal_moves: list[dict],
+    game_name: str,
+    step: int,
+    player_id: int,
+    bc_recorder: BCRecorder | None,
+    verbose: bool,
+) -> tuple[int, str]:
+    """Pick an action for one player and return (action_idx, move_description)."""
+    if bc_recorder:
+        action_idx = bc_recorder.act_and_record(
+            state, legal_moves, game_name, step
+        )
+        decision = consumer.last_decision
+    else:
+        action_idx, decision = consumer.act(state, legal_moves)
+
+    move_desc = ""
+    if 0 <= action_idx < len(legal_moves):
+        move_desc = legal_moves[action_idx].get("description", "")
+
+    if verbose and decision is not None:
+        tag = f"P{player_id}" if player_id else ""
+        n_moves = len(legal_moves)
+        if n_moves <= 1:
+            print(f"    Step {step}: {tag} [{action_idx}] {move_desc} (trivial)")
+        else:
+            print(
+                f"    Step {step}: {tag} [{action_idx}/{n_moves-1}] {move_desc} "
+                f"(conf={decision.confidence:.2f})"
+            )
+            if decision.reasoning:
+                print(f"      > {decision.reasoning}")
+
+    return action_idx, move_desc
+
+
 def play_one_game(
     gm: GameManager,
     consumer: LLMActionConsumer,
@@ -44,79 +86,114 @@ def play_one_game(
     max_steps: int = 500,
     verbose: bool = False,
     bc_recorder: BCRecorder | None = None,
+    self_play: bool = False,
 ) -> dict:
     """
-    Play one full game with the LLM agent as P1.
+    Play one full game with the LLM agent.
+
+    When self_play=True, the LLM controls both P1 and P2. Otherwise P2 is
+    the PHP engine's EncounterAI.
 
     Returns a dict with game results and stats.
     """
-    # Create game
+    # Create game — both players are external when self-playing
     game_name, p1_key, p2_key = gm.create_game(
         p1_deck=p1_deck,
         p2_deck=p2_deck,
-        p2_is_ai=True,
+        p2_is_ai=not self_play,
     )
 
+    mode = "self-play" if self_play else "vs EncounterAI"
     if verbose:
-        print(f"  Game {game_name} created: {p1_deck} vs {p2_deck}")
+        print(f"  Game {game_name} created: {p1_deck} vs {p2_deck} ({mode})")
+
+    players = [
+        (1, p1_key),
+        (2, p2_key),
+    ]
 
     step = 0
     result = None
+    consecutive_passes = 0
+    max_consecutive_passes = 20  # Detect stuck games
+    no_priority_polls = 0
+    max_no_priority_polls = 80  # Safety valve for truly stuck states
 
     while step < max_steps:
-        # Get state (blocking until we have priority or game is over)
-        state = gm.get_state_blocking(game_name, player_id=1, auth_key=p1_key)
+        # In self-play, try both players each iteration to find who has priority.
+        # Against EncounterAI, only poll P1.
+        players_to_poll = players if self_play else players[:1]
 
-        # Check terminal
-        phase = (state.get("phase") or {}).get("turnPhase", "")
-        if phase == "OVER":
-            # Determine winner
-            my_health = int(state.get("myState", {}).get("health", 0) or 0)
-            opp_health = int(state.get("theirState", {}).get("health", 0) or 0)
-            result = "win" if my_health > opp_health else "loss"
-            if verbose:
-                print(
-                    f"  Game over: {result} "
-                    f"(P1: {my_health} HP, P2: {opp_health} HP, {step} steps)"
+        acted = False
+        for player_id, auth_key in players_to_poll:
+            state = gm.get_state(game_name, player_id=player_id, auth_key=auth_key)
+
+            # Check terminal
+            phase = (state.get("phase") or {}).get("turnPhase", "")
+            if phase == "OVER":
+                # From P1's perspective
+                p1_state = state if player_id == 1 else gm.get_state(
+                    game_name, player_id=1, auth_key=p1_key
                 )
+                my_health = int(p1_state.get("myState", {}).get("health", 0) or 0)
+                opp_health = int(p1_state.get("theirState", {}).get("health", 0) or 0)
+                result = "win" if my_health > opp_health else "loss"
+                if verbose:
+                    print(
+                        f"  Game over: {result} "
+                        f"(P1: {my_health} HP, P2: {opp_health} HP, {step} steps)"
+                    )
+                break
+
+            if not state.get("havePriority"):
+                continue
+            legal_moves = state.get("legalMoves", [])
+            if not legal_moves:
+                continue
+
+            # This player has priority — make a decision
+            action_idx, move_desc = _do_turn(
+                consumer, state, legal_moves, game_name, step,
+                player_id, bc_recorder, verbose,
+            )
+
+            # Loop detection
+            is_pass = "pass" in move_desc.lower()
+            if is_pass:
+                consecutive_passes += 1
+            else:
+                consecutive_passes = 0
+
+            if consecutive_passes >= max_consecutive_passes:
+                result = "stuck"
+                if verbose:
+                    print(
+                        f"  Game stuck: {consecutive_passes} consecutive passes "
+                        f"at step {step}. Aborting."
+                    )
+                break
+
+            # Submit action
+            params = legal_moves[action_idx].get("params", {})
+            gm.submit_action(
+                game_name, player_id=player_id, auth_key=auth_key, params=params
+            )
+            step += 1
+            acted = True
+            no_priority_polls = 0
+            break  # Re-poll from top to find who has priority next
+
+        if result is not None:
             break
 
-        legal_moves = state.get("legalMoves", [])
-        if not legal_moves:
-            # No legal moves but not terminal — wait and retry
+        if not acted:
+            no_priority_polls += 1
+            if no_priority_polls >= max_no_priority_polls:
+                result = "stuck"
+                if verbose:
+                    print(f"  Game stuck: no player got priority for {no_priority_polls} polls")
+                break
             time.sleep(0.25)
-            continue
-
-        # Choose action — both paths go through consumer.act(), so we
-        # always have the LLMDecision available for verbose output.
-        if bc_recorder:
-            action_idx = bc_recorder.act_and_record(
-                state, legal_moves, game_name, step
-            )
-            # Pull the last decision from the consumer for verbose logging
-            decision = consumer.last_decision
-        else:
-            action_idx, decision = consumer.act(state, legal_moves)
-
-        if verbose and decision is not None:
-            move_desc = ""
-            if 0 <= action_idx < len(legal_moves):
-                move_desc = legal_moves[action_idx].get("description", "")
-            n_moves = len(legal_moves)
-            if n_moves <= 1:
-                print(f"    Step {step}: [{action_idx}] {move_desc} (trivial)")
-            else:
-                print(
-                    f"    Step {step}: [{action_idx}/{n_moves-1}] {move_desc} "
-                    f"(conf={decision.confidence:.2f})"
-                )
-                if decision.reasoning:
-                    print(f"      > {decision.reasoning}")
-
-        # Submit action
-        params = legal_moves[action_idx].get("params", {})
-        gm.submit_action(game_name, player_id=1, auth_key=p1_key, params=params)
-        step += 1
 
     if result is None:
         result = "truncated"
@@ -146,6 +223,10 @@ def main() -> None:
     parser.add_argument("--index-dir", default=None, help="Card index directory")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed output")
     parser.add_argument("--max-steps", type=int, default=500, help="Max steps per game")
+    parser.add_argument(
+        "--self-play", action="store_true",
+        help="LLM plays both sides (better BC data, 2x API cost per decision)",
+    )
 
     # BC recording
     parser.add_argument("--record", action="store_true", help="Record BC training data")
@@ -153,6 +234,13 @@ def main() -> None:
         "--output",
         default="llm_demos/data.jsonl",
         help="Output path for BC data (with --record)",
+    )
+
+    # Distillation logging (for fine-tuning a local model)
+    parser.add_argument(
+        "--distill-log",
+        default=None,
+        help="Log prompt/response pairs for local model fine-tuning (JSONL)",
     )
 
     args = parser.parse_args()
@@ -170,8 +258,16 @@ def main() -> None:
     index_dir = args.index_dir or str(Path(__file__).parent.parent / "indices")
     card_index = CardIndex(persist_dir=index_dir)
     retriever = Retriever(card_index)
-    llm_agent = LLMAgent(retriever, model=model)
+    # Auto-enable distillation logging when recording BC data
+    distill_log = args.distill_log
+    if distill_log is None and args.record:
+        distill_log = str(Path(args.output).parent / "distill.jsonl")
+
+    llm_agent = LLMAgent(retriever, model=model, distill_log=distill_log)
     consumer = LLMActionConsumer(llm_agent)
+
+    if distill_log:
+        print(f"[play_llm] Distillation log: {distill_log}")
 
     gm = GameManager(base_url=args.base_url)
 
@@ -184,12 +280,13 @@ def main() -> None:
         print(f"[play_llm] Recording BC data to {args.output}")
 
     # Play games
-    results = {"win": 0, "loss": 0, "truncated": 0}
+    results = {"win": 0, "loss": 0, "truncated": 0, "stuck": 0}
     total_steps = 0
     start_time = time.time()
 
+    mode_str = "self-play" if args.self_play else "vs EncounterAI"
     print(
-        f"[play_llm] Playing {args.n_games} games: "
+        f"[play_llm] Playing {args.n_games} games ({mode_str}): "
         f"{args.deck} vs {args.opponent_deck} (model: {model})"
     )
 
@@ -203,6 +300,7 @@ def main() -> None:
             max_steps=args.max_steps,
             verbose=args.verbose,
             bc_recorder=bc_recorder,
+            self_play=args.self_play,
         )
         results[game_result["result"]] += 1
         total_steps += game_result["steps"]
@@ -220,6 +318,7 @@ def main() -> None:
     print(f"  Wins:      {results['win']}")
     print(f"  Losses:    {results['loss']}")
     print(f"  Truncated: {results['truncated']}")
+    print(f"  Stuck:     {results['stuck']}")
     if results["win"] + results["loss"] > 0:
         win_rate = results["win"] / (results["win"] + results["loss"])
         print(f"  Win rate:  {100*win_rate:.0f}%")

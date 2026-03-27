@@ -2,13 +2,15 @@
 demo_dataset.py — Storage for human demonstration data used in behavioral cloning.
 
 Each record captures one human decision:
-  obs          float32 (OBS_DIM,)      — encoded game state
-  action       int                     — index the human chose from legalMoves
-  legal_mask   bool (MAX_ACTIONS,)     — which slots were legal at this step
-  card_ids     int64 (N_CARD_SLOTS,)   — card identity indices (0 = no embedding)
-  description  str                     — human-readable description of the chosen move
-  game         str                     — game name (groups steps into sequences for LSTM)
-  step         int                     — step index within the game
+  obs              float32 (OBS_DIM,)      — encoded game state
+  action           int                     — index the human chose from legalMoves
+  legal_mask       bool (MAX_ACTIONS,)     — which slots were legal at this step
+  card_ids         int64 (N_CARD_SLOTS,)   — card identity indices (0 = no embedding)
+  description      str                     — human-readable description of the chosen move
+  game             str                     — game name (groups steps into sequences for LSTM)
+  step             int                     — step index within the game
+  llm_confidence   float (optional)        — LLM self-reported confidence (0.0-1.0)
+  llm_reasoning    str (optional)          — LLM reasoning for the decision
 
 Saved as JSON-lines (.jsonl): one JSON object per line, numpy arrays as lists.
 This format is human-inspectable and easy to append to without loading the whole file.
@@ -122,6 +124,49 @@ class DemoDataset:
     def summary(self) -> str:
         return f"DemoDataset: {self.n_steps} steps across {self.n_games} games"
 
+    def filter_llm(
+        self,
+        drop_trivial: bool = True,
+        min_confidence: float = 0.0,
+    ) -> "DemoDataset":
+        """
+        Return a new DemoDataset with LLM-specific filtering applied.
+
+        Parameters
+        ----------
+        drop_trivial:
+            Remove records where only one legal move was available
+            (trivial/forced decisions that carry zero learning signal).
+        min_confidence:
+            Drop records where llm_confidence is below this threshold.
+            Records without an llm_confidence field are kept.
+
+        Returns a new DemoDataset (the original is not modified).
+        """
+        before = len(self._records)
+        filtered = []
+        for r in self._records:
+            # Drop trivial: only 1 legal action was available
+            if drop_trivial:
+                mask = r.get("legal_mask", [])
+                if sum(mask) <= 1:
+                    continue
+            # Drop low-confidence
+            conf = r.get("llm_confidence")
+            if conf is not None and conf < min_confidence:
+                continue
+            filtered.append(r)
+
+        ds = DemoDataset()
+        ds._records = filtered
+        dropped = before - len(filtered)
+        print(
+            f"[DemoDataset] Filtered: {before} → {len(filtered)} records "
+            f"({dropped} dropped, drop_trivial={drop_trivial}, "
+            f"min_confidence={min_confidence})"
+        )
+        return ds
+
     # ------------------------------------------------------------------
     # Batched iteration (for MLP behavioral cloning — shuffled)
     # ------------------------------------------------------------------
@@ -132,7 +177,11 @@ class DemoDataset:
         device:     torch.device,
         shuffle:    bool = True,
     ) -> Iterator[dict[str, torch.Tensor]]:
-        """Yield shuffled mini-batches of tensors for MLP training."""
+        """Yield shuffled mini-batches of tensors for MLP training.
+
+        Each batch includes a ``confidence`` tensor (float32, shape (B,)).
+        Records without ``llm_confidence`` default to 1.0.
+        """
         n = len(self._records)
         indices = np.random.permutation(n) if shuffle else np.arange(n)
         for start in range(0, n, batch_size):
@@ -150,6 +199,10 @@ class DemoDataset:
                 ).to(device),
                 "card_ids":   torch.tensor(
                     [r["card_ids"]   for r in batch_recs], dtype=torch.long
+                ).to(device),
+                "confidence": torch.tensor(
+                    [r.get("llm_confidence", 1.0) for r in batch_recs],
+                    dtype=torch.float32,
                 ).to(device),
             }
 
@@ -181,5 +234,9 @@ class DemoDataset:
             ).to(device),
             "card_ids":   torch.tensor(
                 [r["card_ids"]   for r in game_records], dtype=torch.long
+            ).to(device),
+            "confidence": torch.tensor(
+                [r.get("llm_confidence", 1.0) for r in game_records],
+                dtype=torch.float32,
             ).to(device),
         }

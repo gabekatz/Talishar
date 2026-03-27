@@ -51,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lstm-hidden",     type=int,   default=256)
     p.add_argument("--lstm-layers",     type=int,   default=1)
     p.add_argument("--device",          default="auto")
+
+    # LLM data quality flags
+    p.add_argument("--confidence-weight", action="store_true", default=False,
+                   help="Weight BC loss by LLM confidence (higher confidence = stronger signal).")
+    p.add_argument("--drop-trivial",     action="store_true", default=False,
+                   help="Remove trivial decisions (only 1 legal move) from training data.")
+    p.add_argument("--min-confidence",   type=float, default=0.0,
+                   help="Drop records with LLM confidence below this threshold (e.g. 0.7).")
     return p.parse_args()
 
 
@@ -80,7 +88,20 @@ def main() -> None:
         return
 
     print(f"[train_bc] {dataset.summary()}")
+
+    # Optional LLM data quality filtering
+    if args.drop_trivial or args.min_confidence > 0:
+        dataset = dataset.filter_llm(
+            drop_trivial=args.drop_trivial,
+            min_confidence=args.min_confidence,
+        )
+        if dataset.n_steps == 0:
+            print("All records were filtered out — adjust thresholds.")
+            return
+
     print(f"[train_bc] device={device}  epochs={args.n_epochs}  lr={args.lr}")
+    if args.confidence_weight:
+        print("[train_bc] Confidence-weighted loss ENABLED")
 
     # Build vocab / encoder if embeddings enabled
     vocab      = CardVocab.load_or_build(args.vocab_path) if args.use_embeddings else None
@@ -106,7 +127,10 @@ def main() -> None:
         ).to(device)
         print(f"[train_bc] Model: ActorCritic (hidden={args.hidden})")
 
-    trainer = BCTrainer(model=model, lr=args.lr, device=device)
+    trainer = BCTrainer(
+        model=model, lr=args.lr, device=device,
+        confidence_weight=args.confidence_weight,
+    )
     trainer.train(
         dataset         = dataset,
         n_epochs        = args.n_epochs,

@@ -29,6 +29,7 @@ _DEFAULT_PHP_PATH = (
     / "GeneratedCardDictionaries.php"
 )
 _DEFAULT_VOCAB_PATH = Path(__file__).parent.parent / "card_vocab.json"
+_DEFAULT_METADATA_PATH = Path(__file__).parent.parent / "card_metadata.json"
 _DEFAULT_INDEX_DIR = Path(__file__).parent.parent / "indices"
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,9 @@ class CardDocument:
     # Go-again flag (separate from keywords for quick access)
     has_go_again: bool = False
 
+    # Rules / ability text from Fabrary (e.g. "Instant - Destroy this: ...")
+    functional_text: str = ""
+
     # Human-readable description for LLM prompts
     description: str = ""
 
@@ -99,6 +103,7 @@ class CardDocument:
             "card_id": self.card_id,
             "name": self.name,
             "description": self.description,
+            "functional_text": self.functional_text,
             "card_type": self.card_type,
             "subtype": self.subtype,
             "cost": float(self.cost),
@@ -112,6 +117,8 @@ class CardDocument:
             "card_class": self.card_class,
             "card_talent": self.card_talent,
             "has_go_again": "true" if self.has_go_again else "false",
+            # Store keywords as comma-separated string (luci doesn't support arrays)
+            "keywords_csv": ",".join(self.keywords) if self.keywords else "",
         }
 
     @classmethod
@@ -128,7 +135,9 @@ class CardDocument:
             power=int(src.get("power", 0)),
             defense=int(src.get("defense", 0)),
             pitch=int(src.get("pitch", 0)),
-            keywords=[],  # Keywords stored in cache, not in index
+            keywords=[
+                k for k in src.get("keywords_csv", "").split(",") if k
+            ],
             attack_value=float(src.get("attack_value", 0.0)),
             block_willingness=float(src.get("block_willingness", 0.5)),
             arsenal_value=float(src.get("arsenal_value", 0.0)),
@@ -136,6 +145,7 @@ class CardDocument:
             card_class=src.get("card_class", ""),
             card_talent=src.get("card_talent", ""),
             has_go_again=src.get("has_go_again") == "true",
+            functional_text=src.get("functional_text", ""),
             description=src.get("description", ""),
         )
 
@@ -374,6 +384,7 @@ def _build_description(
     has_go_again: bool,
     card_class: str,
     card_talent: str,
+    functional_text: str = "",
 ) -> str:
     """Build a human-readable description for LLM prompts."""
     parts = [name + "."]
@@ -414,12 +425,17 @@ def _build_description(
     if card_talent:
         parts.append(f"Talent: {card_talent}.")
 
-    # Keywords
-    kw_list = list(keywords)
-    if has_go_again and "go_again" not in kw_list:
-        kw_list.append("go_again")
-    if kw_list:
-        parts.append("Keywords: " + ", ".join(kw_list) + ".")
+    # Functional text (rules text from Fabrary) — most important for LLM
+    if functional_text:
+        parts.append(f"Rules: {functional_text}")
+
+    # Keywords (only if no functional text, since rules text usually covers them)
+    if not functional_text:
+        kw_list = list(keywords)
+        if has_go_again and "go_again" not in kw_list:
+            kw_list.append("go_again")
+        if kw_list:
+            parts.append("Keywords: " + ", ".join(kw_list) + ".")
 
     return " ".join(parts)
 
@@ -468,6 +484,7 @@ class CardIndex:
         cls,
         php_path: str | Path | None = None,
         persist_dir: str | Path | None = None,
+        metadata_path: str | Path | None = None,
     ) -> "CardIndex":
         """
         Build the card index from GeneratedCardDictionaries.php.
@@ -475,12 +492,18 @@ class CardIndex:
         Parses all card stats, keywords, and type info, then computes
         rate-system valuations and indexes everything in lucisearch.
 
+        If card_metadata.json is available (enriched with Fabrary data),
+        functional_text (card rules/abilities) is included so the LLM
+        knows what each card actually does.
+
         Parameters
         ----------
         php_path:
             Path to GeneratedCardDictionaries.php.
         persist_dir:
             Where to store the lucisearch index on disk.
+        metadata_path:
+            Path to card_metadata.json (enriched with Fabrary data).
 
         Returns
         -------
@@ -488,27 +511,61 @@ class CardIndex:
         """
         src = Path(php_path) if php_path else _DEFAULT_PHP_PATH
         pd = Path(persist_dir) if persist_dir else _DEFAULT_INDEX_DIR
+        meta_path = Path(metadata_path) if metadata_path else _DEFAULT_METADATA_PATH
 
         print(f"[CardIndex] Parsing {src}...")
         raw_cards = _parse_php_dictionaries(src)
         print(f"[CardIndex] Parsed {len(raw_cards):,} cards")
 
+        # Load enriched metadata (functional text from Fabrary)
+        metadata: dict[str, dict] = {}
+        if meta_path.exists():
+            print(f"[CardIndex] Loading metadata from {meta_path}...")
+            try:
+                content = meta_path.read_text()
+                # Fix known JSON issues in card_metadata.json
+                import re as _re
+                content = _re.sub(r'"([^"]*)",([a-zA-Z])', r'"\1",', content)
+                content = _re.sub(r",(\s*[}\]])", r"\1", content)
+                metadata = json.loads(content)
+                has_func = sum(
+                    1 for m in metadata.values() if m.get("functional_text")
+                )
+                print(f"[CardIndex]   {len(metadata):,} cards, "
+                      f"{has_func:,} with functional text")
+            except Exception as e:
+                print(f"[CardIndex]   WARNING: Failed to load metadata: {e}")
+        else:
+            print(f"[CardIndex] No metadata file at {meta_path} — "
+                  f"descriptions will lack ability text")
+
         # Build CardDocuments with computed valuations
         card_docs: list[CardDocument] = []
         for card_id, props in raw_cards.items():
-            card_type = props.get("type", "")
+            meta = metadata.get(card_id, {})
+
+            # Use PHP parser as primary, enriched metadata as fallback
+            card_type = props.get("type", "") or meta.get("type", "")
             power = props.get("power", 0)
             defense = props.get("defense", 0)
             cost = props.get("cost", 0)
             pitch = props.get("pitch", 0)
-            keywords = props.get("keywords", [])
-            has_go_again = props.get("go_again", False)
-            card_class = props.get("class", "")
-            card_talent = props.get("talent", "")
-            name = props.get("name", card_id.replace("_", " ").title())
+            card_class = props.get("class", "") or meta.get("class", "")
+            card_talent = props.get("talent", "") or meta.get("talent", "")
+            name = props.get("name", "") or meta.get("name", "") or card_id.replace("_", " ").title()
 
+            # Merge keywords from PHP and metadata (metadata is more complete)
+            php_keywords = props.get("keywords", [])
+            meta_keywords = [k.lower().replace(" ", "_") for k in meta.get("keywords", [])]
+            # Use metadata keywords if available (authoritative), else PHP
+            keywords = meta_keywords if meta_keywords else php_keywords
+
+            has_go_again = props.get("go_again", False) or "go_again" in keywords
             if has_go_again and "go_again" not in keywords:
                 keywords = keywords + ["go_again"]
+
+            # Pull functional text from enriched metadata
+            functional_text = meta.get("functional_text", "")
 
             attack_value = _compute_attack_value(power, keywords)
             block_will = _compute_block_willingness(defense, card_type, keywords)
@@ -528,6 +585,7 @@ class CardIndex:
                 has_go_again,
                 card_class,
                 card_talent,
+                functional_text=functional_text,
             )
 
             card_docs.append(
@@ -548,9 +606,16 @@ class CardIndex:
                     card_class=card_class,
                     card_talent=card_talent,
                     has_go_again=has_go_again,
+                    functional_text=functional_text,
                     description=description,
                 )
             )
+
+        # Delete old index so we rebuild with the new schema
+        old_index = pd / "cards.luci"
+        if old_index.exists():
+            old_index.unlink()
+            print(f"[CardIndex] Removed old index at {old_index}")
 
         # Index in lucisearch
         store = IndexStore("cards", persist_dir=pd)
