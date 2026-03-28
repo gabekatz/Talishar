@@ -119,6 +119,13 @@ class TalisharEnv(gym.Env):
         self._prev_opp_equip_ids: list[str] = []
         self._last_state: dict[str, Any] = {}
         self._last_chosen_move: dict[str, Any] | None = None
+        self._prev_hand_size: int = 0  # for stranded-hand detection
+        self._prev_ap: int = 0  # previous action points
+        self._attacks_this_turn: int = 0  # chain length tracker
+        self._prev_turn_for_chain: int = -1  # reset chain counter on new turn
+        self._prev_opp_hand_size: int = 4  # for on-hit opportunity detection
+        self._prev_arsenal_size: int = 0  # for arsenal utilization tracking
+        self._arsenaled_last_turn: bool = False  # did we arsenal last turn?
         self._step_count: int = 0
 
         # Pitch stack tracking: records the pitch values (1=red, 2=yellow, 3=blue)
@@ -171,6 +178,13 @@ class TalisharEnv(gym.Env):
         self._turn0_was_offensive = self._prev_phase != "D"
         self._step_count = 0
         self._last_chosen_move = None
+        self._prev_hand_size = len(state.get("myState", {}).get("hand", []))
+        self._prev_ap = int(state.get("myState", {}).get("ap", 0) or 0)
+        self._attacks_this_turn = 0
+        self._prev_turn_for_chain = 0
+        self._prev_opp_hand_size = len(state.get("theirState", {}).get("hand", []))
+        self._prev_arsenal_size = len(state.get("myState", {}).get("arsenal", []))
+        self._arsenaled_last_turn = False
         self._pitch_history = []
         self._starting_deck_size = int(
             state.get("myState", {}).get("deckCount", 60) or 60
@@ -473,7 +487,114 @@ class TalisharEnv(gym.Env):
         if turn_no > 0 and self._prev_turn_no == 0:
             if self._turn0_was_offensive and self._turn0_damage_dealt == 0:
                 shaped -= self.shaped_reward_scale * 2.0
+
+        # Stranded hand penalty: if the model played a card on its own turn
+        # (offensive phase) and action points dropped to 0, but hand cards
+        # remain that could have been played, it likely played a non-go-again
+        # card before exhausting its attack chain.  This wastes potential
+        # damage — the remaining hand cards are stranded.
+        #
+        # Detect: we were in action/main phase, had AP > 0, played a card,
+        # and now AP = 0 with cards still in hand.
+        curr_ap = int(state.get("myState", {}).get("ap", 0) or 0)
+        curr_hand_size = len(state.get("myState", {}).get("hand", []))
+        if (self._prev_phase in ("M", "A", "B")
+                and self._prev_ap > 0
+                and curr_ap == 0
+                and curr_hand_size > 0
+                and self._last_chosen_move
+                and self._last_chosen_move.get("type", "") in (
+                    "PLAY_CARD", "PLAY_ATTACK", "CHOOSE_CARD",
+                )):
+            # Penalty scales with stranded cards — more stranded = bigger mistake
+            stranded = min(curr_hand_size, 3)
+            shaped -= self.shaped_reward_scale * 1.5 * stranded
+
+        # -----------------------------------------------------------
+        # Attack chain length bonus: Ninja's power comes from chaining
+        # many attacks via go-again.  Reward each consecutive attack in
+        # a turn with a small diminishing bonus.  This teaches the model
+        # to sequence go-again cards before closers and to activate
+        # Kodachis as part of chains rather than in isolation.
+        #
+        # Bonus: 0.005 per chain link (3rd attack = 0.015 cumulative)
+        # Capped at chain length 6 to avoid degenerate incentives.
+        # -----------------------------------------------------------
+        if turn_no != self._prev_turn_for_chain:
+            self._attacks_this_turn = 0
+            self._prev_turn_for_chain = turn_no
+
+        played_attack = (
+            self._last_chosen_move
+            and self._last_chosen_move.get("type", "") in (
+                "PLAY_CARD", "PLAY_ATTACK", "ACTIVATE_EQUIPMENT",
+            )
+            and delta_opp >= 0  # didn't somehow hurt us
+            and self._prev_phase in ("M", "A", "B")
+        )
+        if played_attack:
+            self._attacks_this_turn += 1
+            if self._attacks_this_turn >= 2:
+                # Diminishing bonus: 2nd attack = 0.5x, 3rd = 0.5x, ...
+                chain_bonus = min(self._attacks_this_turn, 6) * 0.5
+                shaped += self.shaped_reward_scale * chain_bonus
+
+        # -----------------------------------------------------------
+        # On-hit landing bonus: when we deal damage and the attacking
+        # card has an on-hit effect, give extra reward.  On-hit effects
+        # (like Command and Conquer destroying arsenal) are often worth
+        # more than the raw damage.  This teaches the model to push
+        # attacks with on-hit effects through and to go wide to exhaust
+        # the opponent's blocks before the on-hit attack.
+        # -----------------------------------------------------------
+        if delta_opp > 0:
+            cc = state.get("combatChain", {})
+            atk_card = cc.get("attackingCard", "") or ""
+            if atk_card:
+                atk_meta = self._card_metadata.get(atk_card, {})
+                on_hit_val = int(atk_meta.get("on_hit_value", 0))
+                if on_hit_val > 0 and cc.get("activeOnHits"):
+                    # On-hit landed — bonus proportional to on-hit value
+                    shaped += self.shaped_reward_scale * min(on_hit_val, 5)
+
+        # -----------------------------------------------------------
+        # Arsenal utilization: reward the cycle of arsenal → play.
+        # Arsenaling a good card and playing it next turn is a core
+        # FaB pattern.  Penalize empty arsenal when the model had the
+        # option to fill it (captures wasted tempo).
+        # -----------------------------------------------------------
+        curr_arsenal = state.get("myState", {}).get("arsenal", [])
+        curr_arsenal_size = len(curr_arsenal)
+
+        # Reward playing from arsenal (arsenal shrunk this step during our turn)
+        if (self._prev_arsenal_size > 0
+                and curr_arsenal_size < self._prev_arsenal_size
+                and self._prev_phase in ("M", "A", "B")):
+            shaped += self.shaped_reward_scale * 1.0  # played our arsenaled card
+
+        # Track if we arsenaled this turn (for next turn's reward)
+        if curr_arsenal_size > self._prev_arsenal_size:
+            self._arsenaled_last_turn = True
+
+        # -----------------------------------------------------------
+        # Lethal awareness: when opponent is within kill range, amplify
+        # the damage-dealt reward.  The model should recognise lethal
+        # opportunities and go all-in rather than playing conservatively.
+        # Also reduce damage-taken penalty when pushing lethal — trading
+        # HP for damage is correct when you can close the game.
+        # -----------------------------------------------------------
+        opp_hp_int = int(opp_hp)
+        if opp_hp_int > 0 and opp_hp_int <= 10 and delta_opp > 0:
+            # Amplify damage reward when opponent is in lethal range
+            lethal_bonus = (11 - opp_hp_int) / 10.0  # 1.0 at 1hp, 0.1 at 10hp
+            shaped += self.shaped_reward_scale * delta_opp * lethal_bonus * 2.0
+
+        # Update tracking
         self._prev_turn_no = turn_no
+        self._prev_hand_size = curr_hand_size
+        self._prev_ap = curr_ap
+        self._prev_opp_hand_size = len(state.get("theirState", {}).get("hand", []))
+        self._prev_arsenal_size = curr_arsenal_size
 
         return float(np.clip(shaped, -1.0, 1.0))
 
@@ -486,6 +607,10 @@ class TalisharEnv(gym.Env):
         - Activating equipment (ACTIVATE_EQUIPMENT)
 
         The penalty is scaled by card utility, turn number, and phase.
+
+        Extra penalty when blocking with equipment while hand cards are
+        still available — the model should exhaust hand cards first,
+        especially on turn 0 where hand cards are free (redrawn).
         """
         move = self._last_chosen_move
         if not move:
@@ -522,7 +647,74 @@ class TalisharEnv(gym.Env):
         if self._prev_phase == "D":
             early_mult *= 2.0
 
-        return -self.equip_penalty_scale * utility * early_mult
+        penalty = -self.equip_penalty_scale * utility * early_mult
+
+        # ---------------------------------------------------------------
+        # Health-context scaling: equipment should only be sacrificed when
+        # the damage is life-threatening.  At 30 HP, 6 damage is trivial
+        # and never worth losing Fyendal's Spring Tunic or Mask of
+        # Momentum.  At 5 HP, 6 damage is lethal — blocking is correct.
+        #
+        # Also factor in opponent threat: empty opponent hand means no
+        # follow-up damage, so the isolated hit is even less threatening.
+        # ---------------------------------------------------------------
+        if is_equip_block and self._prev_phase == "D":
+            my_hp = int(state.get("myState", {}).get("health", 20) or 20)
+            opp_hand = len(state.get("theirState", {}).get("hand", []))
+
+            # Estimate incoming damage from combat chain
+            cc = state.get("combatChain", {})
+            incoming = int(cc.get("totalAttack", 0) or 0) - int(cc.get("totalBlock", 0) or 0)
+            incoming = max(incoming, 0)
+
+            is_lethal = incoming >= my_hp
+            # "Near-lethal" = damage would put us at <=5 HP
+            is_near_lethal = (my_hp - incoming) <= 5
+
+            if is_lethal:
+                # Blocking to survive is correct — reduce penalty significantly
+                # (small residual penalty so model still prefers hand cards first)
+                penalty *= 0.1
+            elif is_near_lethal:
+                # Borderline — mild penalty, model can learn the nuance
+                penalty *= 0.5
+            else:
+                # Not threatening — amplify penalty based on health cushion.
+                # More health = more wasteful to sacrifice equipment.
+                health_ratio = min(my_hp / 20.0, 2.0)  # 1.0 at 20hp, 1.5 at 30hp
+                penalty *= health_ratio
+
+                # Opponent empty hand = no follow-up threat, even less reason
+                # to panic-block with equipment.
+                if opp_hand == 0:
+                    penalty *= 2.0
+
+        # Hand-cards-available penalty: if blocking with equipment while
+        # hand cards are still available, apply a steep extra penalty.
+        # Hand cards should ALWAYS be exhausted before equipment,
+        # especially on turn 0 where hand cards are free (redrawn).
+        if is_equip_block and self._prev_phase == "D":
+            hand_size = len(state.get("myState", {}).get("hand", []))
+            if hand_size > 0:
+                # Scale by hand size — more cards available = worse mistake
+                hand_mult = min(hand_size, 4)  # cap at 4
+                if turn_no == 0:
+                    # On turn 0, hand cards are FREE. This is never correct.
+                    penalty += -self.equip_penalty_scale * utility * 10.0 * hand_mult
+                else:
+                    # After turn 0, still wrong but less egregious
+                    penalty += -self.equip_penalty_scale * utility * 3.0 * hand_mult
+
+        # Wasted activation penalty: activating equipment/weapons when
+        # hand is empty means no follow-up is possible (e.g. Tearing Shuko
+        # buffs next Crouching Tiger, but with no cards there's nothing to
+        # buff). Penalize proportional to the action's futility.
+        if is_equip_activate:
+            hand_size = len(state.get("myState", {}).get("hand", []))
+            if hand_size == 0:
+                penalty += -self.equip_penalty_scale * 3.0
+
+        return penalty
 
     def _terminal_reward(self, state: dict) -> float:
         r = self._result(state)

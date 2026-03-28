@@ -131,6 +131,23 @@ class LSTMActorCritic(nn.Module):
                 nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
 
+        self._lstm_pinned_cpu = False
+
+    def to(self, *args, **kwargs):
+        """Override to keep LSTM on CPU when target device is MPS."""
+        result = super().to(*args, **kwargs)
+        # Detect if we moved to MPS — if so, pin LSTM back to CPU
+        try:
+            device = args[0] if args else kwargs.get("device")
+            if device is not None:
+                device = torch.device(device)
+                if device.type == "mps":
+                    self.lstm.cpu()
+                    self._lstm_pinned_cpu = True
+        except Exception:
+            pass
+        return result
+
     # ------------------------------------------------------------------
     # Hidden-state helpers
     # ------------------------------------------------------------------
@@ -156,6 +173,8 @@ class LSTMActorCritic(nn.Module):
         """
         orig_device = inp.device
         if orig_device.type == "mps":
+            # LSTM stays on CPU permanently (MPS has Metal bugs with nn.LSTM).
+            # Only inputs/outputs cross the device boundary.
             out, (h_new, c_new) = self.lstm(
                 inp.cpu(), (h.cpu(), c.cpu())
             )
