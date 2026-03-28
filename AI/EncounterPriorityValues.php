@@ -44,11 +44,10 @@
  *   0.1-0.9 = will activate (higher first)
  * 
  * HOW TO ADD/EDIT CARDS:
- * 1. Open CardBehaviors.php
- * 2. Find your hero's function (e.g., GetIraBehaviors())
- * 3. Add or edit your card in the array
- * 4. Run AIDebugger.php's ValidateCardBehaviors() to check your values
- * 5. Test in game!
+ * Card priorities are now computed dynamically from card stats (power, block,
+ * pitch, cost, card type) in CardBehaviors.php::ComputeCardBehavior().
+ * To override specific cards (e.g. state-dependent logic), add a case to the
+ * switch at the top of GetCardBehavior() and implement a Compute* function.
  */
 
 // Include supporting files

@@ -1,0 +1,698 @@
+{
+  "ira_crimson_haze": {
+    "ability": "Once per Turn Action - 0: Attack with Ira. (When you attack with a weapon, your attack action cards gain go again this turn. Ira has 0 power.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "ira_scarlet_revenger": {
+    "ability": "Once per Turn Action - 0: Attack with Ira. If Ira has hit this turn, she gains +2 power for this attack. (When you attack with a weapon, your attack action cards gain go again this turn.)",
+    "intellect": 4,
+    "life": 18
+  },
+  "katsu": {
+    "ability": "Once per Turn Instant - 0: If a Combo card you control hits, search your deck for a card with Combo, reveal it, and put it into your hand. Shuffle your deck.",
+    "intellect": 4,
+    "life": 20
+  },
+  "benji_the_piercing_wind": {
+    "ability": "When you play your second action card each turn, draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "bravo": {
+    "ability": "Guardian hero. When you defend with a card from hand that has defense 3 or greater, you may draw a card at the end of the chain link.",
+    "intellect": 4,
+    "life": 40
+  },
+  "dorinthea": {
+    "ability": "Once per Turn Effect - When your weapon attack hits a hero, your next weapon attack this turn gains +1 power.",
+    "intellect": 4,
+    "life": 20
+  },
+  "rhinar": {
+    "ability": "Once per Turn Action - 0: Discard a random card. If a card with 6 or more power is discarded this way, draw a card, then your attacks gain intimidate this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dash": {
+    "ability": "Once per Turn Instant - 0: If you have boosted this turn, you may banish a Mechanologist item from your hand with cost 2 or less. If you do, put it into the arena.",
+    "intellect": 4,
+    "life": 20
+  },
+  "viserai": {
+    "ability": "Whenever you play a Runeblade non-attack action card, create a Runechant token.",
+    "intellect": 4,
+    "life": 20
+  },
+  "vynnset": {
+    "ability": "Once per Turn Action - Destroy any number of Runechant tokens you control: Deal that much arcane damage to target hero, then you lose that much life.",
+    "intellect": 4,
+    "life": 20
+  },
+  "chane": {
+    "ability": "Once per Turn Instant - 0: You may play a card with blood debt from your banished zone. At the beginning of your end phase, you lose 1 life for each card with blood debt in your banished zone.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kano": {
+    "ability": "Instant - 0: Look at the top card of your deck. You may play it as though it were an instant. If it has Wizard in its name, it gains +1 arcane damage.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dromai": {
+    "ability": "Once per Turn Action - 0: Create an Ash token. Go again.",
+    "intellect": 4,
+    "life": 20
+  },
+  "fai": {
+    "ability": "Whenever a Draconic chain link resolves, deal 1 arcane damage to each opposing hero.",
+    "intellect": 4,
+    "life": 20
+  },
+  "lexi": {
+    "ability": "Once per Turn Instant - 0: You may put an arrow from your arsenal face up into the bow zone. If you do, your next arrow attack this turn gains dominate.",
+    "intellect": 4,
+    "life": 20
+  },
+  "prism": {
+    "ability": "Once per Turn Instant - 0: Create a Spectral Shield token. (If your hero would be dealt damage, you may instead destroy a Spectral Shield you control.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "azalea": {
+    "ability": "Once per Turn Action - 0: Put an arrow from your hand face up into the bow zone. If you do, it gains dominate.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kassai": {
+    "ability": "When you attack with a weapon, if this is the second or later weapon attack this turn, create a Copper token. (Copper is an item with 'Action - Destroy this: Gain 1 resource.')",
+    "intellect": 4,
+    "life": 20
+  },
+  "oldhim": {
+    "ability": "Essence of Earth and Ice - At the start of your turn, you may pitch an Earth or Ice card from your hand. If you pitch an Earth card, gain 1 life. If you pitch an Ice card, the next attack action card you play this turn gains +1 power.",
+    "intellect": 4,
+    "life": 40
+  },
+  "arakni": {
+    "ability": "Once per Turn Action - 0: Target attack action card with stealth in your graveyard gains go again until end of turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "arakni_5lp3d_7hru_7h3_cr4x": {
+    "ability": "Once per Turn Action - 0: Look at the top card of target hero's deck. If it's a non-attack action card, banish it. If you do, create a Frailty token under their control and they draw a card.",
+    "intellect": 4,
+    "life": 40
+  },
+  "arakni_huntsman": {
+    "ability": "Once per Turn Action - 0: Target Assassin attack action card in your graveyard gains go again until end of turn.",
+    "intellect": 4,
+    "life": 40
+  },
+  "arakni_marionette": {
+    "ability": "Once per Turn Action - 0: Target attack action card with contract in your graveyard gains go again until end of turn.",
+    "intellect": 4,
+    "life": 40
+  },
+  "arakni_solitary_confinement": {
+    "ability": "Instant - 2: Look at the top card of target hero's deck. If it's blue, banish it.",
+    "intellect": 4,
+    "life": 20
+  },
+  "arakni_web_of_deceit": {
+    "ability": "Once per Turn Action - 0: Target attack action card with stealth in your graveyard gains go again until end of turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "aurora": {
+    "ability": "Essence of Lightning - Once per Turn Action - 0: If you've played a 'non-attack' action card this turn, create an Embodiment of Lightning token.",
+    "intellect": 4,
+    "life": 20
+  },
+  "aurora_legacy_of_tempest": {
+    "ability": "Essence of Lightning (You may have Lightning cards in your deck.) Once per Turn Action - 0: If you've played a 'non-attack' action card this turn, create an Embodiment of Lightning token.",
+    "intellect": 4,
+    "life": 40
+  },
+  "aurora_shooting_star": {
+    "ability": "Essence of Lightning and Ice - Once per Turn Action - 0: If you've played a 'non-attack' action card this turn, create an Embodiment of Lightning token.",
+    "intellect": 4,
+    "life": 40
+  },
+  "azalea_ace_in_the_hole": {
+    "ability": "Once per Turn Action - 2: If you have no cards in your arsenal, you may put an arrow card from your hand face down into your arsenal.",
+    "intellect": 4,
+    "life": 40
+  },
+  "betsy": {
+    "ability": "Instant - 0: The next attack action card you play this turn gains +1 [Power].",
+    "intellect": 4,
+    "life": 20
+  },
+  "betsy_skin_in_the_game": {
+    "ability": "Once per Turn Instant - 0: The next Warrior attack action card you play this turn gains +2 [Power].",
+    "intellect": 4,
+    "life": 40
+  },
+  "blaze_firemind": {
+    "ability": "Essence of Fire - Once per Turn Action - 0: If you've played a 'non-attack' action card this turn, create an Embodiment of Fire token.",
+    "intellect": 4,
+    "life": 20
+  },
+  "bolfar_bear_hands": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "boltyn": {
+    "ability": "Essence of Light - Once per Turn Action - 0: If you've dealt arcane damage this turn, create a Seismic Surge aura token with 'At the beginning of your action phase, destroy Seismic Surge and deal 1 arcane damage to each opposing hero.'",
+    "intellect": 4,
+    "life": 20
+  },
+  "bravo_flattering_showman": {
+    "ability": "Once per Turn Action - 0: The next attack action card you play this turn with cost 3 or greater gains go again.",
+    "intellect": 4,
+    "life": 20
+  },
+  "bravo_showstopper": {
+    "ability": "Once per Turn Action - 0: The next attack action card you play this turn with cost 3 or greater gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "bravo_star_of_the_show": {
+    "ability": "Essence of Earth and Ice - Once per Turn Action - 0: The next attack action card you play this turn with cost 3 or greater gains dominate. If it's Earth or Ice, it gains +3 [Power].",
+    "intellect": 4,
+    "life": 40
+  },
+  "brevant_civic_protector": {
+    "ability": "Once per Turn Instant - 0: Target attack gains +1 [Power]. If you control 4 or more equipment, it gains an additional +2 [Power].",
+    "intellect": 4,
+    "life": 20
+  },
+  "briar": {
+    "ability": "Essence of Earth - Once per Turn Action - 0: If you've gained [Life] this turn, create an Embodiment of Earth token.",
+    "intellect": 4,
+    "life": 20
+  },
+  "briar_warden_of_thorns": {
+    "ability": "Essence of Earth and Lightning - Once per Turn Action - 0: If you've gained [Life] this turn, create an Embodiment of Earth token.",
+    "intellect": 4,
+    "life": 40
+  },
+  "brutus_summa_rudis": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "chane_bound_by_shadow": {
+    "ability": "Essence of Shadow - Once per Turn Action - 0: Banish a card from your hand. If a card is banished this way, gain 1 [Life].",
+    "intellect": 4,
+    "life": 40
+  },
+  "cindra": {
+    "ability": "Once per Turn Action - 0: If you've played a red card this turn, create a Crouching Tiger in your hand.",
+    "intellect": 4,
+    "life": 20
+  },
+  "cindra_dracai_of_retribution": {
+    "ability": "Once per Turn Action - 0: If you've played a red card this turn, search your deck for a card with combo, banish it, then shuffle. You may play it this turn.",
+    "intellect": 4,
+    "life": 40
+  },
+  "dash_database": {
+    "ability": "Once per Turn Action - 0: The next Mechanologist attack action card you play this turn gets +1 [Power] and gains go again.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dash_inventor_extraordinaire": {
+    "ability": "Once per Turn Action - 0: The next Mechanologist attack action card you play this turn gets +1 [Power] and gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "dash_io": {
+    "ability": "Once per Turn Action - 0: The next Mechanologist attack action card you play this turn gets +1 [Power] and gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "data_doll_mkii": {
+    "ability": "Once per Turn Action - 0: Put a card from your hand on the bottom of your deck, then draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dorinthea_ironsong": {
+    "ability": "Once per Turn Action - 0: Attack action cards with cost 1 or less you control gain go again. (Weapons you control are also attack action cards.)",
+    "intellect": 4,
+    "life": 40
+  },
+  "dorinthea_quicksilver_prodigy": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1 POWER this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "dromai_ash_artist": {
+    "ability": "Essence of Ash - You may play ash cards from your banished zone. If you do, they gain Phantasm. (If Phantasm is not defined, the defending hero may banish a card from their hand. If they do, destroy Phantasm.)",
+    "intellect": 4,
+    "life": 40
+  },
+  "emperor_dracai_of_aesir": {
+    "ability": "Once per Turn Action - 0: The next attack action card you play this turn gains +2 POWER and go again.",
+    "intellect": 4,
+    "life": 20
+  },
+  "enigma": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "enigma_ledger_of_ancestry": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "enigma_new_moon": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "fai_rising_rebellion": {
+    "ability": "Once per Turn Action - 0: The next Ninja attack action card you play this turn gains +1 POWER and go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "fang": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "fang_dracai_of_blades": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "fightmaster_kox": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "florian": {
+    "ability": "Once per Turn Action - 0: The next Runeblade attack action card you play this turn gains +1 POWER.",
+    "intellect": 4,
+    "life": 20
+  },
+  "florian_rotwood_harbinger": {
+    "ability": "Once per Turn Action - 0: The next Runeblade attack action card you play this turn gains +2 POWER. If it's not your turn, it gains +3 POWER instead.",
+    "intellect": 4,
+    "life": 40
+  },
+  "frankie_make_ends_meat": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "genis_wotchuneed": {
+    "ability": "Once per Turn Action - 0: Look at the top card of your deck. You may put a card from your hand on top of your deck. If you do, put the card you looked at into your hand.",
+    "intellect": 4,
+    "life": 20
+  },
+  "gravy_bones": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "gravy_bones_shipwrecked_looter": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "groundbreaker_crix": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "hala_bladesaint_of_the_vow": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "iyslander": {
+    "ability": "Essence of Ice - You may play blue 'non-attack' action cards from your arsenal as though they were an instant.",
+    "intellect": 4,
+    "life": 20
+  },
+  "iyslander_stormbind": {
+    "ability": "Essence of Ice and Lightning - You may play blue 'non-attack' action cards from your arsenal as though they were an instant. Lightning and Ice attacks you control have dominate. (The defending hero can't defend with more than 1 card from their hand.)",
+    "intellect": 4,
+    "life": 40
+  },
+  "jarl_vetreidi": {
+    "ability": "Essence of Earth and Ice - Instant - 0: Target attack gains +3 POWER. Activate this ability only if you have Earth and Ice Fusion. (You start the game with Earth and Ice in your hero pool.)",
+    "intellect": 4,
+    "life": 40
+  },
+  "kano_dracai_of_aether": {
+    "ability": "Once per Turn Action - 0: Deal 1 arcane damage to any target.",
+    "intellect": 4,
+    "life": 40
+  },
+  "kassai_cintari_sellsword": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1 POWER this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kassai_of_the_golden_sand": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +2 POWER this turn.",
+    "intellect": 4,
+    "life": 40
+  },
+  "katsu_the_wanderer": {
+    "ability": "Once per Turn Action - 0: The next Ninja attack action card you play this turn costs 1 resource less to play.",
+    "intellect": 4,
+    "life": 40
+  },
+  "kavdaen_trader_of_skins": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "kayo": {
+    "ability": "Once per Turn Action - 0: Discard a card. If a card with 6 or more POWER is discarded this way, your Brute attack action cards gain +2 POWER this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kayo_armed_and_dangerous": {
+    "ability": "Once per Turn Action - 0: Discard a card. If a card with 6 or more POWER is discarded this way, your Brute attack action cards gain +3 POWER this turn.",
+    "intellect": 4,
+    "life": 40
+  },
+  "kayo_berserker_runt": {
+    "ability": "Once per Turn Action - 0: Discard a card. If a card with 6 or more POWER is discarded this way, your Brute attack action cards gain +2 POWER this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "kayo_strong_arm": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 20
+  },
+  "kayo_underhanded_cheat": {
+    "ability": "Once per Turn Action - 0: Banish a card from Kayo's soul. If a card with 6 or more {p} is banished this way, the next attack action card you play this turn gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "levia": {
+    "ability": "Once per Turn Action - 0: Banish the top card of your deck. If a Runechant is banished this way, deal 1 arcane damage to any target.",
+    "intellect": 4,
+    "life": 20
+  },
+  "levia_shadowborn_abomination": {
+    "ability": "Essence of Shadow - As an additional cost to play Levia, banish 6 cards from your graveyard. Once per Turn Action - 0: Banish up to 6 cards from your graveyard. If 6 cards are banished this way, create 6 Runechant tokens.",
+    "intellect": 4,
+    "life": 40
+  },
+  "lexi_livewire": {
+    "ability": "Once per Turn Action - 0: Until end of turn, your next arrow attack gains +1{p} and \"If this has an aim counter, it gains +1{p} and dominate.\"",
+    "intellect": 4,
+    "life": 40
+  },
+  "lyath_goldmane": {
+    "ability": "Once per Turn Action - 0: The next time you would be dealt damage this turn, prevent 1 of that damage.",
+    "intellect": 4,
+    "life": 20
+  },
+  "lyath_goldmane_vile_savant": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1{p} until end of turn. At the beginning of your end phase, if you have not gained {h} this turn, lose 1{h}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "marlynn": {
+    "ability": "Once per Turn Action - 0: If you have 1 or less cards in hand, draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "marlynn_treasure_hunter": {
+    "ability": "Once per Turn Action - 0: Look at the top card of your deck. If it's an item, you may put it into your hand. Otherwise, put it on the bottom of your deck.",
+    "intellect": 4,
+    "life": 40
+  },
+  "maxx_nitro": {
+    "ability": "Once per Turn Action - 0: Reveal the top card of your deck. If it's a Mechanologist card, gain 1{h}. Otherwise, put it on the bottom of your deck.",
+    "intellect": 4,
+    "life": 20
+  },
+  "maxx_the_hype_nitro": {
+    "ability": "Once per Turn Instant - 0: The next time you boost this turn, if the revealed card is a Mechanologist card, the boost gains +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "melody_sing_along": {
+    "ability": "Once per Turn Action - 0: Target hero draws a card, then discards a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "nuu": {
+    "ability": "Once per Turn Action - 0: Look at target hero's hand and choose a card. That hero discards that card unless they pay 1 resource.",
+    "intellect": 4,
+    "life": 20
+  },
+  "nuu_alluring_desire": {
+    "ability": "Once per Turn Action - 0: Target hero reveals their hand. Choose a card revealed this way and banish it. You may play it this turn as though it were in your hand.",
+    "intellect": 4,
+    "life": 40
+  },
+  "oldhim_grandfather_of_eternity": {
+    "ability": "Essence of Earth and Ice - Once per Turn Action - 0: Gain +1{d} until end of turn. At the beginning of your end phase, if an Earth card entered your pitch zone this turn, gain 1{h}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "olympia": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1{p} this turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "olympia_prized_fighter": {
+    "ability": "Once per Turn Action - 0: Your next attack this turn gets +X{p} where X is the number of times you have activated Olympia this game.",
+    "intellect": 4,
+    "life": 40
+  },
+  "oscilio": {
+    "ability": "Once per Turn Action - 0: The next card you play this turn with an effect that deals arcane damage, deals 1 additional arcane damage.",
+    "intellect": 4,
+    "life": 20
+  },
+  "oscilio_constella_intelligence": {
+    "ability": "Essence of Earth, Ice, and Lightning - Once per Turn Action - 0: Deal 1 arcane damage to any target. Opt 1.",
+    "intellect": 4,
+    "life": 40
+  },
+  "oscilio_forked_continuum": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "pleiades": {
+    "ability": "Once per Turn Action - 0: The next time you would gain {h} this turn, instead gain that much {h} plus 1.",
+    "intellect": 4,
+    "life": 20
+  },
+  "pleiades_superstar": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "prism_advent_of_thrones": {
+    "ability": "Once per Turn Action - 0: Look at the top card of your deck. If it's a card with Herald, you may reveal it and opt 2. If you do, put it into your hand.",
+    "intellect": 4,
+    "life": 20
+  },
+  "prism_awakener_of_sol": {
+    "ability": "Once per Turn Action - 0: Create a Spectral Shield token. Opt 1.",
+    "intellect": 4,
+    "life": 40
+  },
+  "prism_sculptor_of_arc_light": {
+    "ability": "Once per Turn Action - 0: Create X Spectral Shield tokens where X is the number of cards in your pitch zone with different names.",
+    "intellect": 4,
+    "life": 40
+  },
+  "professor_teklovossen": {
+    "ability": "Once per Turn Action - 0: Put an Evo Upgrade or Evo token from your hand into the arena.",
+    "intellect": 4,
+    "life": 20
+  },
+  "puffin": {
+    "ability": "Once per Turn Action - 0: If you have a Mechanologist item or Mechanologist aura in the arena, draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "puffin_hightail": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "reya_the_unyielding": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "rhinar_reckless_rampage": {
+    "ability": "Intimidate (When this attacks, target hero banishes face down a random card from their hand. At end of turn, return all cards banished this way to their owners hand.)",
+    "intellect": 4,
+    "life": 40
+  },
+  "riptide": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1{p} this turn. At the beginning of your end phase, deal 1 damage to Riptide.",
+    "intellect": 4,
+    "life": 20
+  },
+  "riptide_lurker_of_the_deep": {
+    "ability": "Once per Turn Action - 0: Create a Tidal Bore token. (It's an aura with \"At the beginning of your action phase, destroy Tidal Bore and the next attack action card you play this turn gains go again.\")",
+    "intellect": 4,
+    "life": 40
+  },
+  "ruudi_gem_keeper": {
+    "ability": "Once per Turn Action - 0: Put a gem you control face down into your arsenal. If you do, draw a card.",
+    "intellect": 4,
+    "life": 40
+  },
+  "scurv_stowaway": {
+    "ability": "Once per Turn Action - 1: Put a card from your hand face down into your arsenal. If you do, draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "ser_boltyn_breaker_of_dawn": {
+    "ability": "Once per Turn Action - 0: The next attack action card you play this turn gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "shiyana_diamond_gemini": {
+    "ability": "Once per Turn Action - 0: Transform target gemstone you control. (Put it on the bottom of your deck and create a Spectral Shield token.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "squizzy_floof": {
+    "ability": "Once per Turn Action - 0: Put a card from your hand face down into your arsenal. Draw a card.",
+    "intellect": 4,
+    "life": 20
+  },
+  "taipanis_dracai_of_judgement": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "taylor": {
+    "ability": "Once per Turn Action - 0: Transform target ash you control. (Put it on the bottom of your deck and create a Spectral Shield token.)",
+    "intellect": 4,
+    "life": 20
+  },
+  "teklovossen": {
+    "ability": "Once per Turn Action - 0: Put a Mechanologist item with cost 1 or less from your inventory into the arena.",
+    "intellect": 4,
+    "life": 20
+  },
+  "teklovossen_esteemed_magnate": {
+    "ability": "Once per Turn Action - 0: Put a Mechanologist item with cost 2 or less from your inventory into the arena. Items you control have +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "terra": {
+    "ability": "Essence of Earth - Once per Turn Action - 0: The next Earth action card you play this turn gains +2{p} and \"If this deals damage, create a Seismic Surge token.\"",
+    "intellect": 4,
+    "life": 20
+  },
+  "theryon_magister_of_justice": {
+    "ability": "UNKNOWN",
+    "intellect": 4,
+    "life": 40
+  },
+  "tuffnut": {
+    "ability": "Once per Turn Action - 0: Target attack action card in your hand gains dominate and \"If this hits a hero, they discard a random card.\"",
+    "intellect": 4,
+    "life": 20
+  },
+  "tuffnut_bumbling_hulkster": {
+    "ability": "Once per Turn Action - 0: Target attack action card in your hand gains dominate and \"If this hits a hero, they discard a random card.\" Brute attack action cards you control have +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "uzuri": {
+    "ability": "Once per Turn Action - 0: Put a contract from your hand face down under this. If there are 3 or more contracts under this, destroy them and draw 3 cards.",
+    "intellect": 4,
+    "life": 20
+  },
+  "uzuri_switchblade": {
+    "ability": "Once per Turn Action - 0: Put a contract from your hand or arsenal face down under this. If there are 3 or more contracts under this, destroy them and search your deck for an Assassin aura, reveal it, put it into your hand, then shuffle.",
+    "intellect": 4,
+    "life": 40
+  },
+  "valda_brightaxe": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1{p} until end of turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "valda_seismic_impact": {
+    "ability": "Once per Turn Action - 0: Attack action cards you control gain +1{p} until end of turn. Guardian attack action cards you control have dominate.",
+    "intellect": 4,
+    "life": 40
+  },
+  "verdance": {
+    "ability": "Essence of Earth - Once per Turn Action - 0: The next Earth action card you play this turn gains +1{p} and \"If this deals damage, create an Embodiment of Earth token.\"",
+    "intellect": 4,
+    "life": 20
+  },
+  "verdance_thorn_of_the_rose": {
+    "ability": "Essence of Earth - Once per Turn Action - 0: The next Earth action card you play this turn gains +2{p} and \"If this deals damage, create an Embodiment of Earth token.\" Wizard action cards you control have +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "victor_goldmane": {
+    "ability": "Once per Turn Action - 0: Gain {g} equal to the number of Gold you control.",
+    "intellect": 4,
+    "life": 20
+  },
+  "victor_goldmane_high_and_mighty": {
+    "ability": "Once per Turn Action - 0: Gain {g} equal to the number of Gold you control. Guardian attack action cards you control have +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "victor_goldmane_match_fixer": {
+    "ability": "Once per Turn Action - 0: Gain {g} equal to the number of Gold you control. Guardian attack action cards you control have \"If this hits, create a Gold token.\"",
+    "intellect": 4,
+    "life": 40
+  },
+  "viserai_rune_blood": {
+    "ability": "Once per Turn Action - 0: The next Runeblade action card you play this turn gains go again.",
+    "intellect": 4,
+    "life": 40
+  },
+  "vynnset_iron_maiden": {
+    "ability": "Once per Turn Action - 0: Put a Runechant into your hand from your banished zone. If you do, deal 1 arcane damage to target hero.",
+    "intellect": 4,
+    "life": 40
+  },
+  "yoji_royal_protector": {
+    "ability": "Once per Turn Action - 0: The next Guardian attack action card you play this turn costs {r} less to play.",
+    "intellect": 4,
+    "life": 20
+  },
+  "yorick_weaver_of_tales": {
+    "ability": "Once per Turn Action - 0: Target another hero gains \"Whenever you pitch a card, gain 1{h}.\" until the start of your next turn.",
+    "intellect": 4,
+    "life": 20
+  },
+  "zen": {
+    "ability": "Combo - Once per Turn Action - 0: Your next attack this turn gains +1{p}.",
+    "intellect": 4,
+    "life": 20
+  },
+  "zen_tamer_of_purpose": {
+    "ability": "Combo - Once per Turn Action - 0: Your next attack this turn gains +1{p}. Ninja attack action cards you control have +1{p}.",
+    "intellect": 4,
+    "life": 40
+  },
+  "zyggy_starlight": {
+    "ability": "Once per Turn Action - 0: Create a Spectral Shield token. (It's an aura with \"If your hero would be dealt damage, instead destroy Spectral Shield and prevent 1 damage that source would deal.\")",
+    "intellect": 4,
+    "life": 40
+  },
+  "_comment": "Hero ability descriptions for hero-conditioned card metadata. Auto-generated entries can be reviewed and corrected manually."
+}

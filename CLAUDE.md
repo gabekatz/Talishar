@@ -130,6 +130,7 @@ AddDecisionQueue("SETDQCONTEXT", $player, "Choose a mode for " . CardLink($cardI
 AddDecisionQueue("BUTTONINPUT", $player, "Option_A,Option_B,Option_C");
 AddDecisionQueue("SHOWMODES", $player, $cardID, 1);
 Await($player, $cardID, final:true);
+n 
 
 // In SpecificLogic — log choice and create trigger layer
 global $dqVars;
@@ -192,3 +193,6 @@ function CurrentEffectGrantsGoAgain($param) {
 - **State variables:** `$currentPlayer` (who has priority, 1 or 2), `$turn[0]` (phase: M=Main, A=Action, D=Defense)
 - **Session handling:** Session lock is released immediately after capturing data to prevent deadlock
 - **Container path mapping:** Project root maps to `/var/www/html/game` in Docker
+
+## Development instructions
+- While working together, I need you to output any decisions and changes you've made to a file entitled CLAUDE_SCRATCH.md. This file should act as a living ledger that provides enough information for you to pick up the entire context of our history working on this project.

@@ -1,0 +1,4 @@
+torch==2.2.2
+gymnasium>=0.29
+numpy>=1.24,<2
+requests>=2.31

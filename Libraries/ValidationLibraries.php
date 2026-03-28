@@ -66,15 +66,9 @@ function validatePlayerID($playerID) {
 }
 
 function validateCardID($cardID) {
-    if (empty($cardID) || !is_string($cardID)) {
+    if (!is_string($cardID) || strlen($cardID) < 1 || strlen($cardID) > 100) {
         return false;
     }
-    
-    // Card ID should be alphanumeric and reasonable length
-    if (strlen($cardID) < 1 || strlen($cardID) > 100) {
-        return false;
-    }
-    
     return true;
 }
 
