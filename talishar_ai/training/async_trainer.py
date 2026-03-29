@@ -113,10 +113,12 @@ class _EnvWorker:
                 # Connection errors, server crashes, etc. should not kill the
                 # worker thread.  Reset the env and pad the buffer so the
                 # barrier is reached cleanly.
+                import traceback
                 print(
                     f"[env-{self.idx}] ERROR in rollout: {exc!r} — "
                     f"resetting env and padding buffer"
                 )
+                traceback.print_exc()
                 try:
                     self.init_obs()
                     if self.use_lstm:

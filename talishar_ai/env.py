@@ -182,7 +182,7 @@ class TalisharEnv(gym.Env):
         self._prev_ap = int(state.get("myState", {}).get("ap", 0) or 0)
         self._attacks_this_turn = 0
         self._prev_turn_for_chain = 0
-        self._prev_opp_hand_size = len(state.get("theirState", {}).get("hand", []))
+        self._prev_opp_hand_size = int(state.get("theirState", {}).get("handCount", 0) or 0)
         self._prev_arsenal_size = len(state.get("myState", {}).get("arsenal", []))
         self._arsenaled_last_turn = False
         self._pitch_history = []
@@ -548,7 +548,7 @@ class TalisharEnv(gym.Env):
         # the opponent's blocks before the on-hit attack.
         # -----------------------------------------------------------
         if delta_opp > 0:
-            cc = state.get("combatChain", {})
+            cc = state.get("combatChain") or {}
             atk_card = cc.get("attackingCard", "") or ""
             if atk_card:
                 atk_meta = self._card_metadata.get(atk_card, {})
@@ -593,7 +593,7 @@ class TalisharEnv(gym.Env):
         self._prev_turn_no = turn_no
         self._prev_hand_size = curr_hand_size
         self._prev_ap = curr_ap
-        self._prev_opp_hand_size = len(state.get("theirState", {}).get("hand", []))
+        self._prev_opp_hand_size = int(state.get("theirState", {}).get("handCount", 0) or 0)
         self._prev_arsenal_size = curr_arsenal_size
 
         return float(np.clip(shaped, -1.0, 1.0))
@@ -660,10 +660,10 @@ class TalisharEnv(gym.Env):
         # ---------------------------------------------------------------
         if is_equip_block and self._prev_phase == "D":
             my_hp = int(state.get("myState", {}).get("health", 20) or 20)
-            opp_hand = len(state.get("theirState", {}).get("hand", []))
+            opp_hand = int(state.get("theirState", {}).get("handCount", 0) or 0)
 
             # Estimate incoming damage from combat chain
-            cc = state.get("combatChain", {})
+            cc = state.get("combatChain") or {}
             incoming = int(cc.get("totalAttack", 0) or 0) - int(cc.get("totalBlock", 0) or 0)
             incoming = max(incoming, 0)
 

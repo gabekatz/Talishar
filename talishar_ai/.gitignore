@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Training artifacts
+checkpoints/
+runs/
+*.pt
+distill_model/
+distill_data/
+
+# LLM demo data (large, regeneratable)
+llm_demos/distill.jsonl
+
+# Diagnostic output
+game_diagnosis*.txt
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Temporary context files
+CONTEXT.md
