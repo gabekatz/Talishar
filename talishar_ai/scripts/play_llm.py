@@ -35,6 +35,7 @@ from talishar_ai.card_vocab import CardVocab
 from talishar_ai.rag.card_index import CardIndex
 from talishar_ai.rag.retriever import Retriever
 from talishar_ai.rag.llm_agent import LLMAgent
+from talishar_ai.rag.local_llm_agent import LocalLLMAgent
 from talishar_ai.rag.consumers.llm_consumer import LLMActionConsumer
 from talishar_ai.rag.consumers.bc_recorder import BCRecorder
 
@@ -243,27 +244,68 @@ def main() -> None:
         help="Log prompt/response pairs for local model fine-tuning (JSONL)",
     )
 
-    args = parser.parse_args()
+    # Local model (replaces Claude API — free, unlimited games)
+    parser.add_argument(
+        "--local", action="store_true",
+        help="Use local fine-tuned MLX model instead of Claude API (free)",
+    )
+    parser.add_argument(
+        "--local-model",
+        default=None,
+        help="Path to fused model or HF model name (default: distill_model/fused)",
+    )
+    parser.add_argument(
+        "--adapter-path",
+        default=None,
+        help="Path to LoRA adapter (if not using fused model)",
+    )
 
-    # Model selection: Haiku for BC recording (cheap), Sonnet for live play (quality)
-    _HAIKU = "claude-haiku-4-5-20251001"
-    _SONNET = "claude-sonnet-4-20250514"
-    if args.model is None:
-        model = _HAIKU if args.record else _SONNET
-    else:
-        model = args.model
+    args = parser.parse_args()
 
     # Build components
     print("[play_llm] Loading card index...")
     index_dir = args.index_dir or str(Path(__file__).parent.parent / "indices")
     card_index = CardIndex(persist_dir=index_dir)
     retriever = Retriever(card_index)
+
     # Auto-enable distillation logging when recording BC data
     distill_log = args.distill_log
     if distill_log is None and args.record:
         distill_log = str(Path(args.output).parent / "distill.jsonl")
 
-    llm_agent = LLMAgent(retriever, model=model, distill_log=distill_log)
+    if args.local:
+        # --- Local MLX model (free, unlimited) ---
+        default_fused = str(Path(__file__).parent.parent / "distill_model" / "fused")
+        default_adapter = str(Path(__file__).parent.parent / "distill_model" / "adapters")
+
+        model_path = args.local_model or default_fused
+        adapter_path = args.adapter_path
+
+        # If fused dir doesn't exist, fall back to base model + adapter
+        if not Path(model_path).exists() and adapter_path is None:
+            print(f"[play_llm] Fused model not found at {model_path}")
+            model_path = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+            adapter_path = default_adapter
+            print(f"[play_llm] Falling back to base model + adapter: {adapter_path}")
+
+        model = f"local:{model_path}"
+        llm_agent = LocalLLMAgent(
+            retriever,
+            model_path=model_path,
+            adapter_path=adapter_path,
+            distill_log=distill_log,
+        )
+    else:
+        # --- Claude API ---
+        _HAIKU = "claude-haiku-4-5-20251001"
+        _SONNET = "claude-sonnet-4-20250514"
+        if args.model is None:
+            model = _HAIKU if args.record else _SONNET
+        else:
+            model = args.model
+
+        llm_agent = LLMAgent(retriever, model=model, distill_log=distill_log)
+
     consumer = LLMActionConsumer(llm_agent)
 
     if distill_log:
@@ -326,30 +368,36 @@ def main() -> None:
     print(f"  Avg steps/game: {total_steps / args.n_games:.0f}")
     print(f"  LLM decisions: {consumer.decisions_made}")
 
-    # API usage stats
+    # Usage stats
     stats = llm_agent.stats
-    print(f"\nAPI Usage:")
-    print(f"  API calls:       {stats['api_calls']}")
-    print(f"  Trivial skipped: {stats['skipped_trivial']} ({100*stats['trivial_skip_rate']:.0f}%)")
-    print(f"  Input tokens:    {stats['input_tokens']:,}")
-    print(f"  Output tokens:   {stats['output_tokens']:,}")
-    print(f"  Total tokens:    {stats['total_tokens']:,}")
-    if stats['input_tokens'] > 0:
-        # Cost estimates per model ($/MTok)
-        costs = {
-            "haiku": (0.80, 4.0),
-            "sonnet": (3.0, 15.0),
-            "opus": (15.0, 75.0),
-        }
-        # Detect model tier from name
-        tier = "sonnet"
-        for t in costs:
-            if t in model.lower():
-                tier = t
-                break
-        in_rate, out_rate = costs[tier]
-        est_cost = (stats['input_tokens'] * in_rate + stats['output_tokens'] * out_rate) / 1_000_000
-        print(f"  Est. cost ({tier}): ${est_cost:.2f}")
+    if args.local:
+        print(f"\nLocal Model Usage:")
+        print(f"  Model calls:     {stats['api_calls']}")
+        print(f"  Trivial skipped: {stats['skipped_trivial']} ({100*stats['trivial_skip_rate']:.0f}%)")
+        print(f"  Total gen time:  {stats.get('total_gen_time', 0):.1f}s")
+        print(f"  Avg gen time:    {stats.get('avg_gen_time', 0):.2f}s/decision")
+        print(f"  Est. cost:       $0.00 (local)")
+    else:
+        print(f"\nAPI Usage:")
+        print(f"  API calls:       {stats['api_calls']}")
+        print(f"  Trivial skipped: {stats['skipped_trivial']} ({100*stats['trivial_skip_rate']:.0f}%)")
+        print(f"  Input tokens:    {stats['input_tokens']:,}")
+        print(f"  Output tokens:   {stats['output_tokens']:,}")
+        print(f"  Total tokens:    {stats['total_tokens']:,}")
+        if stats['input_tokens'] > 0:
+            costs = {
+                "haiku": (0.80, 4.0),
+                "sonnet": (3.0, 15.0),
+                "opus": (15.0, 75.0),
+            }
+            tier = "sonnet"
+            for t in costs:
+                if t in model.lower():
+                    tier = t
+                    break
+            in_rate, out_rate = costs[tier]
+            est_cost = (stats['input_tokens'] * in_rate + stats['output_tokens'] * out_rate) / 1_000_000
+            print(f"  Est. cost ({tier}): ${est_cost:.2f}")
 
 
 if __name__ == "__main__":

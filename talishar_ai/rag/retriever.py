@@ -67,6 +67,14 @@ class RetrievalContext:
     combat_chain_defense: int = 0
     combat_chain_keywords: list[str] = field(default_factory=list)
     attacking_card: CardDocument | None = None
+    chain_link_count: int = 0  # How many attacks in this chain so far
+    effective_damage: int = 0  # power - defense (damage that will go through)
+    attacking_card_on_hit: str = ""  # On-hit effect text of attacking card
+
+    # Stack (what's currently resolving)
+    stack_card: str = ""  # Card ID on the stack
+    stack_card_power: int = 0
+    stack_card_cost: int = 0
 
     # Strategic signals (pre-computed for consumers)
     can_threaten_lethal: bool = False
@@ -212,6 +220,39 @@ class Retriever:
         my_health = _i(my.get("health", 0))
         opp_health = _i(opp.get("health", 0))
         cc_power = _i(cc.get("totalPower", 0))
+        cc_defense = _i(cc.get("totalDefense", 0))
+        effective_damage = max(0, cc_power - cc_defense)
+
+        # Chain link count (attacks in current chain)
+        chain_link_count = _i(cc.get("chainLinkCount", 0))
+
+        # On-hit text of attacking card
+        atk_on_hit = ""
+        if attacking_card:
+            meta = self._cards._metadata.get(attacking_card.card_id, {})
+            on_hit_text = meta.get("on_hit_text", "")
+            if on_hit_text:
+                atk_on_hit = on_hit_text
+            elif attacking_card.functional_text and "hit" in attacking_card.functional_text.lower():
+                # Extract on-hit sentence from functional text
+                for sentence in attacking_card.functional_text.split("."):
+                    if "hit" in sentence.lower():
+                        atk_on_hit = sentence.strip()
+                        break
+
+        # Stack (currently resolving card)
+        stack = state.get("stack") or {}
+        stack_card = ""
+        stack_power = 0
+        stack_cost = 0
+        if stack:
+            contents = stack.get("contents", [])
+            if contents and isinstance(contents, list):
+                top = contents[-1] if contents else {}
+                stack_card = top.get("cardID", "")
+                stats = top.get("stats", {})
+                stack_power = _i(stats.get("power", 0))
+                stack_cost = _i(stats.get("cost", 0))
 
         # Hero IDs from character zone
         hero_id = ""
@@ -241,9 +282,15 @@ class Retriever:
             opp_deck_count=_i(opp.get("deckCount", 0)),
             opp_hand_count=_i(opp.get("handCount", 0)),
             combat_chain_power=cc_power,
-            combat_chain_defense=_i(cc.get("totalDefense", 0)),
+            combat_chain_defense=cc_defense,
             combat_chain_keywords=cc_keywords,
             attacking_card=attacking_card,
+            chain_link_count=chain_link_count,
+            effective_damage=effective_damage,
+            attacking_card_on_hit=atk_on_hit,
+            stack_card=stack_card,
+            stack_card_power=stack_power,
+            stack_card_cost=stack_cost,
             can_threaten_lethal=(
                 opp_health > 0 and total_power >= opp_health
             ),
@@ -344,7 +391,9 @@ class Retriever:
         """
         lines: list[str] = []
 
-        # Header
+        # =============================================================
+        # STATE DASHBOARD — critical numbers (read these FIRST)
+        # =============================================================
         phase_names = {
             "M": "Main Phase",
             "A": "Action Phase",
@@ -352,50 +401,85 @@ class Retriever:
             "B": "Begin Phase",
             "ARS": "Arsenal Phase",
             "P": "Priority",
+            "INSTANT": "Instant",
         }
         phase_name = phase_names.get(ctx.phase, ctx.phase)
-        lines.append(f"PHASE: {phase_name} (Turn {ctx.turn_number})")
+        potential_resources = ctx.resources + ctx.total_hand_pitch
+
+        lines.append("========== STATE DASHBOARD ==========")
+        lines.append(f"PHASE: {phase_name}  |  TURN: {ctx.turn_number}")
+        lines.append(
+            f"ACTION POINTS: {ctx.action_points}  |  "
+            f"RESOURCES: {ctx.resources} floating, {potential_resources} potential"
+        )
+        lines.append(
+            f"MY HP: {ctx.my_health}  |  OPP HP: {ctx.opp_health}"
+        )
+        lines.append(
+            f"MY HAND: {len(ctx.hand_cards)} cards  |  "
+            f"OPP HAND: {ctx.opp_hand_count} cards"
+        )
+        lines.append(
+            f"MY DECK: {ctx.my_deck_count}  |  OPP DECK: {ctx.opp_deck_count}"
+        )
+
+        # Combat chain — show in ALL phases when active
+        if ctx.combat_chain_power > 0 or ctx.attacking_card:
+            kw_str = ", ".join(ctx.combat_chain_keywords) if ctx.combat_chain_keywords else "none"
+            atk_name = ctx.attacking_card.name if ctx.attacking_card else "unknown"
+            lines.append(
+                f"COMBAT CHAIN: {atk_name} — "
+                f"Power: {ctx.combat_chain_power}, "
+                f"Blocked: {ctx.combat_chain_defense}, "
+                f"Unblocked damage: {ctx.effective_damage}, "
+                f"Keywords: {kw_str}"
+            )
+            if ctx.attacking_card_on_hit:
+                lines.append(f"  ON-HIT EFFECT: {ctx.attacking_card_on_hit}")
+            if ctx.chain_link_count > 0:
+                lines.append(f"  Chain links so far: {ctx.chain_link_count}")
+
+        # Stack — show what's currently resolving
+        if ctx.stack_card:
+            lines.append(
+                f"STACK: {ctx.stack_card} (power {ctx.stack_card_power}, "
+                f"cost {ctx.stack_card_cost})"
+            )
+
+        # Turn 0 warning
         if ctx.is_turn_zero:
             lines.append(
                 "*** TURN 0: Hand cards are FREE to block (redrawn). "
                 "NEVER break equipment. ***"
             )
-        lines.append(
-            f"MY HEALTH: {ctx.my_health} | OPPONENT HEALTH: {ctx.opp_health}"
-        )
-        potential_resources = ctx.resources + ctx.total_hand_pitch
-        lines.append(
-            f"RESOURCES: {ctx.resources} (floating) | "
-            f"POTENTIAL: {potential_resources} (pitch cards from hand to generate more) | "
-            f"ACTION POINTS: {ctx.action_points}"
-        )
-        lines.append(
-            f"MY DECK: {ctx.my_deck_count} | OPP DECK: {ctx.opp_deck_count} "
-            f"| OPP HAND: {ctx.opp_hand_count}"
-        )
+
+        # Lethal warnings
+        if ctx.incoming_lethal:
+            lines.append("*** LETHAL INCOMING — MUST BLOCK OR DIE ***")
+        if ctx.can_threaten_lethal:
+            lines.append("*** CAN THREATEN LETHAL THIS TURN ***")
+
+        lines.append("=====================================")
         lines.append("")
 
+        # =============================================================
         # Hand cards
+        # =============================================================
         if ctx.hand_cards:
             lines.append(f"MY HAND ({len(ctx.hand_cards)} cards):")
             for i, c in enumerate(ctx.hand_cards, 1):
                 kw_str = ", ".join(c.keywords) if c.keywords else "none"
                 card_line = (
                     f"  {i}. {c.name} ({c.card_id}) — "
-                    f"Type: {c.card_type}, Cost: {c.cost}, "
-                    f"Power: {c.power}, Defense: {c.defense}, "
-                    f"Pitch: {c.pitch}. "
-                    f"Keywords: {kw_str}. "
-                    f"Value: {c.best_use_value:.1f}. "
-                    f"Block willingness: {c.block_willingness:.1f}"
+                    f"Cost:{c.cost} Pow:{c.power} Def:{c.defense} "
+                    f"Pitch:{c.pitch} KW:{kw_str}"
                 )
                 if c.functional_text:
-                    card_line += f"\n     Ability: {c.functional_text}"
+                    card_line += f"\n     {c.functional_text}"
                 lines.append(card_line)
             lines.append(
-                f"  >> Total hand: power={ctx.total_hand_power}, "
-                f"defense={ctx.total_hand_defense}, pitch={ctx.total_hand_pitch}, "
-                f"avg value={ctx.avg_hand_value:.1f}"
+                f"  >> Totals: power={ctx.total_hand_power}, "
+                f"defense={ctx.total_hand_defense}, pitch={ctx.total_hand_pitch}"
             )
             lines.append("")
 
@@ -403,35 +487,34 @@ class Retriever:
         if ctx.arsenal_cards:
             lines.append("MY ARSENAL:")
             for c in ctx.arsenal_cards:
-                lines.append(f"  - {c.name} ({c.card_id}) — {c.description}")
+                kw_str = ", ".join(c.keywords) if c.keywords else "none"
+                lines.append(
+                    f"  - {c.name} ({c.card_id}) — "
+                    f"Cost:{c.cost} Pow:{c.power} Def:{c.defense} KW:{kw_str}"
+                )
+                if c.functional_text:
+                    lines.append(f"    {c.functional_text}")
             lines.append("")
 
-        # Equipment
+        # Equipment (compact — names + defense + key ability only)
         if ctx.equipment:
             lines.append("MY EQUIPMENT:")
             for c in ctx.equipment:
-                equip_line = (
-                    f"  - {c.name} ({c.card_id}) — Def: {c.defense}. "
-                    f"Keywords: {', '.join(c.keywords) if c.keywords else 'none'}"
-                )
+                equip_line = f"  - {c.name} ({c.card_id}) Def:{c.defense}"
                 if c.functional_text:
-                    equip_line += f"\n    Ability: {c.functional_text}"
+                    # Truncate long ability text for brevity
+                    text = c.functional_text
+                    if len(text) > 120:
+                        text = text[:117] + "..."
+                    equip_line += f" — {text}"
                 lines.append(equip_line)
             lines.append("")
 
-        # Combat chain (defense phase)
-        if ctx.phase == "D" and ctx.combat_chain_power > 0:
-            lines.append("INCOMING ATTACK:")
-            if ctx.attacking_card:
-                lines.append(
-                    f"  {ctx.attacking_card.name} — "
-                    f"Power: {ctx.combat_chain_power}, "
-                    f"Keywords: {', '.join(ctx.combat_chain_keywords) or 'none'}"
-                )
-            else:
-                lines.append(f"  Total power: {ctx.combat_chain_power}")
-            if ctx.incoming_lethal:
-                lines.append("  *** LETHAL INCOMING — MUST BLOCK OR DIE ***")
+        # Opponent equipment (compact)
+        if ctx.opponent_equipment:
+            lines.append("OPP EQUIPMENT:")
+            for c in ctx.opponent_equipment:
+                lines.append(f"  - {c.name} Def:{c.defense}")
             lines.append("")
 
         # Best combos (main phase)
@@ -449,11 +532,7 @@ class Retriever:
 
         # Strategic signals
         signals = []
-        if ctx.can_threaten_lethal:
-            signals.append("CAN THREATEN LETHAL this turn")
-        if ctx.incoming_lethal:
-            signals.append("INCOMING LETHAL if unblocked")
-        if ctx.best_arsenal_candidate and ctx.phase in ("M", "A"):
+        if ctx.best_arsenal_candidate and ctx.phase in ("M", "A", "ARS"):
             signals.append(
                 f"Best arsenal candidate: {ctx.best_arsenal_candidate.name} "
                 f"(value {ctx.best_arsenal_candidate.arsenal_value:.1f})"
